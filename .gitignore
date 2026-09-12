@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+*.dump
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+**/TestResults/
+.local/
+.tmp/
+.docx-review/
+*.log
+*.tsbuildinfo

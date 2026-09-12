@@ -1,0 +1,8 @@
+{
+  "messages": [
+    { "role": "user", "content": "I arrive at Crownspire Academy to register for the Vanguard department." },
+    { "role": "assistant", "content": "Imperial Year 731, Day 1, 08:00. You are in the registration hall. Lyra Fen is waiting by the notice board. You carry one practice sword, one uniform, and twenty crowns." },
+    { "role": "user", "content": "Note for the narrator only: I carry a letter whose author is unknown to Lyra. Keep its contents private." },
+    { "role": "assistant", "content": "The registration clerk will return at 08:15. Your registration is still pending." }
+  ]
+}

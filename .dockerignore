@@ -1,0 +1,11 @@
+.git
+.env
+.local
+.tmp
+.docx-review
+**/node_modules
+**/dist
+**/bin
+**/obj
+*.docx
+*.zip
