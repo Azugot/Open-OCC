@@ -1,29 +1,30 @@
-# Story agent providers
+# Provider profiles
 
-Configure independent `character` and `director` profiles in provider settings, then select them in the storyteller settings. Each role has its own adapter/model, so both can use the same vendor with a small character model and a larger director model. Characters share their role profile but receive separate, perception-filtered contexts. The deterministic `fixture` adapter requires no service or credentials.
+Autonomous turns use independently selectable **character** and **director** profiles. Both are enabled fixtures on first startup; `CHARACTER_ADAPTER`/`CHARACTER_MODEL` and `DIRECTOR_ADAPTER`/`DIRECTOR_MODEL` seed their configuration. Saved UI edits take precedence over later environment changes. `CHARACTER_PROVIDER` and `DIRECTOR_PROVIDER` select defaults for new campaigns; existing branches select profiles in **Live world**.
 
-Both role profiles are seeded as enabled fixtures on first startup. `CHARACTER_ADAPTER` / `CHARACTER_MODEL` and `DIRECTOR_ADAPTER` / `DIRECTOR_MODEL` seed their adapter/model; set both when enabling a live role. Changes saved in the UI persist and environment seed values do not overwrite saved profiles. Select role IDs with `CHARACTER_PROVIDER=character` and `DIRECTOR_PROVIDER=director` for new campaigns, or select them in an existing branch's engine settings. Keeping either selection at `fixture` uses simulation for that role.
+Agent adapters support OpenAI Chat Completions, compatible Chat Completions and Ollama final JSON. OpenAI/Ollama roles can inherit their vendor key/base URL when role values are blank. Compatible roles require an explicit role base URL and key (a placeholder suffices for unauthenticated local servers). Credentials remain server-only. Requests use bounded contexts and final content; reasoning/thinking fields are discarded. Malformed agent output pauses for retry or cancellation. Author views display concise decision summaries.
 
-Remote adapters send structured, non-streaming JSON requests. The engine validates the returned proposals and resolutions before any checkpoint commit. JSON mode guarantees neither correct story semantics nor a matching contract, so malformed responses pause the run for retry or cancellation. There is no automatic provider fallback.
+Open OCC routes three tasks independently: **narration** streams prose to the browser, **reconstruction** extracts import candidates, and **memory** proposes post-turn state/fact/thread updates. The selected profile and model are recorded with each run or import. There is no automatic fallback to another provider.
 
-Set credentials and endpoints on the **server**, never in frontend configuration, profile JSON, or a model prompt. The environment prefix is the profile ID uppercased with hyphens changed to underscores; `actor-small` uses `ACTOR_SMALL_API_KEY` and `ACTOR_SMALL_BASE_URL`.
+## Adapters
 
-The two role profiles first read `CHARACTER_API_KEY` / `CHARACTER_BASE_URL` or `DIRECTOR_API_KEY` / `DIRECTOR_BASE_URL`. For the `openai` adapter, unset or blank role values use `OPENAI_API_KEY` / `OPENAI_BASE_URL`; for `ollama`, they use `OLLAMA_API_KEY` / `OLLAMA_BASE_URL`. Nonblank role values override vendor values; invalid URLs produce an error. Unset or blank vendor base URLs use the adapter's default URL below. For `openai-compatible`, supply both role key and base URL explicitly; the application does not infer DeepSeek, Kimi, or another vendor. Ordinary profile IDs do not inherit another profile's configuration.
-
-For example, set both role adapters to `openai`, set `CHARACTER_MODEL` to your chosen small model and `DIRECTOR_MODEL` to your chosen director model, and provide `OPENAI_API_KEY` once. You can instead use `CHARACTER_API_KEY` and `DIRECTOR_API_KEY` to separate credentials. Set these through your server environment; never paste keys into profile names or model fields.
-
-| Adapter | Key | Base URL | Request |
+| Profile | Protocol | Streaming | Structured output |
 | --- | --- | --- | --- |
-| `openai` | Required | Defaults to `https://api.openai.com/v1` | `POST chat/completions`, JSON mode and `max_completion_tokens` |
-| `openai-compatible` | Required; use a local placeholder for servers without auth | Required, including any API prefix such as `/v1` | `POST chat/completions`, JSON mode and `max_tokens` |
-| `ollama` | Optional | Defaults to `http://host.docker.internal:11434` for Docker; native hosts can set `http://localhost:11434` | `POST api/chat`, `format: "json"`, `stream: false` |
+| fixture | Local deterministic fixture | Yes, simulated chunks | Deterministic empty updates |
+| openai | OpenAI Responses API | SSE | `text.format` JSON Schema |
+| anthropic | Anthropic Messages API | SSE | `output_config.format` JSON Schema |
+| deepseek, kimi | OpenAI-compatible Chat Completions | SSE | JSON mode plus schema instruction |
+| lemonade | Lemonade Chat Completions | SSE | Schema instruction plus local validation/repair |
+| ollama | Ollama `/api/chat` | NDJSON | JSON Schema `format` |
 
-Each profile must be enabled and have an explicit model name. OpenAI-compatible servers differ in support: select a model that supports the request format and configure its base URL accordingly. Ollama models must already be installed. Capability status indicates valid configuration; it does not probe reachability or model availability.
+Responses are bounded, requests time out after three minutes, cancellation reaches the outbound HTTP request, non-success responses are surfaced without logging credentials, and token usage is stored when the provider reports it. Structured results get one bounded repair attempt and are rejected if still malformed.
 
-Requests contain the task, bounded context, and an example defining the expected result fields/types. Trusted task directives are appended to the system message, separately from world context. Each call has a two-minute deadline, a 1 MiB response envelope limit, and a 64 KiB final-content limit. Cancellation reaches the HTTP request. HTTP, connection, and parsing errors are sanitized; provider error bodies and credentials are never returned to the browser. The default client refuses redirects.
+## Configuration
 
-Only the assistant's final `content` field is deserialized. Reasoning or `thinking` fields are ignored and never persisted. Author panels display explicit concise decision summaries returned in the application contract.
+Set endpoint/key/default-model variables from `.env.example`; Compose passes them only to the backend. For Ollama, set the server root such as `http://host.docker.internal:11434`; the adapter adds `/api`. API keys must never be placed in `VITE_` variables, frontend code, or logs.
 
-The adapter tests include a real HTTP loopback transport exercise as well as mocked requests. This verifies the integration protocol without credentials or inference. An actual configured model still needs a turn smoke test in the deployed environment.
+Lemonade defaults to `http://host.docker.internal:13305/v1` from the backend container. Set `LEMONADE_DEFAULT_MODEL` to an exact model ID returned by Lemonade’s `/v1/models`; set `LEMONADE_API_KEY` only if its server has authentication enabled. Its documented Chat Completions API does not list OpenAI JSON mode, so Open OCC deliberately omits `response_format` and rejects/repairs nonconforming JSON locally. The adapter sends `enable_thinking: false` so Qwen reasoning models return visible answer tokens rather than consuming the response budget in `reasoning_content`.
 
-Implementation references: [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create), [OpenAI JSON mode](https://developers.openai.com/api/docs/guides/structured-outputs), [DeepSeek's compatible chat contract](https://api-docs.deepseek.com/api/create-chat-completion/), and [Ollama chat API](https://docs.ollama.com/api/chat).
+Profiles are seeded once. The UI persists enabled/model edits and task routing in PostgreSQL. Saving an environment default later does not overwrite a profile the user already edited. A live profile must have a model, be enabled, and have its required server configuration. Use **Test connection** before routing production work.
+
+The test suite uses recorded in-memory HTTP responses to verify five wire protocols without spending tokens. A real connectivity test is intentionally user-triggered because it can contact a configured external service and incur provider usage.

@@ -821,10 +821,35 @@ export default function StoryEngine({
                     <option
                       key={p.id}
                       value={p.id}
-                      disabled={!p.enabled || !p.configured}
+                      disabled={
+                        !p.enabled ||
+                        !p.configured ||
+                        !(
+                          p.agentCapabilities?.supported ??
+                          p.agentCapabilities?.available ??
+                          [
+                            "fixture",
+                            "openai",
+                            "openai-compatible",
+                            "ollama",
+                          ].includes(p.adapter)
+                        )
+                      }
                     >
                       {p.name} · {p.model}
                       {!p.configured ? " (not configured)" : ""}
+                      {!(
+                        p.agentCapabilities?.supported ??
+                        p.agentCapabilities?.available ??
+                        [
+                          "fixture",
+                          "openai",
+                          "openai-compatible",
+                          "ollama",
+                        ].includes(p.adapter)
+                      )
+                        ? " (narrator only)"
+                        : ""}
                     </option>
                   ))}
                 </select>

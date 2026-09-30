@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Story;
@@ -11,9 +12,11 @@ using Story;
 namespace Story.Api.Migrations
 {
     [DbContext(typeof(StoryDb))]
-    partial class StoryDbModelSnapshot : ModelSnapshot
+    [Migration("20260930004404_AgentImportDrafts")]
+    partial class AgentImportDrafts
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -181,10 +184,6 @@ namespace Story.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<string>("WorldJson")
-                        .IsRequired()
-                        .HasColumnType("text");
-
                     b.HasKey("Id");
 
                     b.HasIndex("BranchId", "Sequence")
@@ -320,10 +319,6 @@ namespace Story.Api.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("DraftJson")
-                        .IsRequired()
-                        .HasColumnType("text");
-
                     b.Property<string>("Error")
                         .HasColumnType("text");
 
@@ -348,7 +343,6 @@ namespace Story.Api.Migrations
                         .HasColumnType("text");
 
                     b.Property<string>("Status")
-                        .IsConcurrencyToken()
                         .IsRequired()
                         .HasColumnType("text");
 

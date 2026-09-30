@@ -46,6 +46,34 @@ public sealed class StoryWorld
         return world;
     }
 
+    // Narrator-only continuity can advance scenes while retaining established graph and memory history.
+    public void SynchronizeScene(StoryState state)
+    {
+        var place = Entities.FirstOrDefault(x => x.Kind == "place" && x.Name == state.Location);
+        if (place is null)
+        {
+            place = new("place-" + StableId(state.Location), state.Location, "place", "", "Established current scene.");
+            place = place with { LocationId = place.Id };
+            Entities.Add(place);
+        }
+        PlayerLocationId = place.Id;
+        var player = Entities.FindIndex(x => x.Id == "player");
+        if (player >= 0) Entities[player] = Entities[player] with { LocationId = place.Id };
+        foreach (var name in state.Participants.Distinct())
+        {
+            var index = Entities.FindIndex(x => x.Kind == "character" && x.Id != "player" && x.Name == name);
+            if (index >= 0) Entities[index] = Entities[index] with { LocationId = place.Id };
+            else
+            {
+                var id = StableId(name);
+                Entities.Add(new(id, name, "character", place.Id, "A participant in this scene."));
+                Characters.Add(new(id, "Pursue personal interests", "The present scene is unfolding", "attentive", "Observe", "", new()));
+            }
+        }
+    }
+
+    private static string StableId(string name) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(name))).ToLowerInvariant()[..24];
+
     public static StoryWorld Crownspire()
     {
         var w = new StoryWorld

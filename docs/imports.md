@@ -1,40 +1,52 @@
-# Import and review
+# Import and agent review
 
-The first importer preserves source bytes before attempting any parsing. Original files are stored as PostgreSQL `bytea` alongside their filename, creation time, and SHA-256 checksum. They have no update/delete API. Database backups include all original files; there is no separate upload directory to lose.
+The original file is stored unchanged with its SHA-256 before reconstruction. Model conclusions remain in separate, versioned drafts until approval. Original downloads return the exact preserved bytes.
 
-## Accepted formats
+## Formats and limits
 
-- UTF-8 `.txt`, with blank lines separating passages. Speaker attribution is `unknown`; no heuristic claims to recover message boundaries.
-- UTF-8 `.json`, with a root `messages` array. Each item must have string `role` and `content` fields. Array order is preserved. Extra fields are not interpreted, but remain intact in the original source.
-- At most 2 MiB per file, 2,000 passages, 16,000 characters per passage, 100 characters per speaker, and 200 characters per filename. Archives, HTML, DOCX and images are not accepted in this milestone. Byte decoding is strict UTF-8.
+- UTF-8 `.txt`, `.md`, and `.markdown`, split on blank lines; obvious speaker prefixes are recorded, ambiguous speakers remain unknown.
+- `.html`/`.htm`, with scripts/styles removed and visible block text converted to passages.
+- `.docx` Word documents up to 2 MiB; paragraphs, table paragraphs, headings, tabs, and line breaks are extracted in document order.
+- UTF-8 `.json` with a root `messages` array of string `role` and `content` fields and optional string `timestamp`.
+- Maximum 2 MiB, 2,000 initial passages, 16,000 characters per initial passage, 100 characters per speaker, and 200 filename characters. Normalized text can be split into up to 4,000 budgeted passages. Archives and images are not accepted.
 
-```json
-{
-  "messages": [
-    { "role": "user", "content": "I ask the clerk about registration." },
-    { "role": "assistant", "content": "Registration closes at noon." }
-  ]
-}
-```
+Symbol-only fragments are marked as possible artifacts and remain visible as evidence. Heading and speaker labels are hints, not proof of a message boundary. A paragraph never automatically becomes a campaign fact.
 
-Use `tests/fixtures/crownspire.json` for an original synthetic example. Export the supplied Word document to UTF-8 plain text if you want to try it; do not rename a DOCX extension to TXT.
+## Durable reconstruction
 
-## Job lifecycle
+New jobs use `agent-v2` and stages `normalize → extract → reconcile → resume → audit → repair → complete`. Status is `queued`, `processing`, `paused`, `review`, `approved`, or `cancelled`.
 
-`queued → processing → review → approved`
+- Extraction reads chronologically and maintains a concise summary, evolving scene, and stable-key ledger of facts, characters, relationships, knowledge, world rules, events, inventory, skills, conditions, and threads.
+- Reconciliation reviews ledger pages with related entries. Explicit corrections and duplicates supersede prior versions; previous versions and evidence remain inspectable.
+- Resume reconstruction uses the evolving state and ending passages to recover the final scene, latest action, and whether a narrator response is pending.
+- A separate audit pass checks claims and the resume against supplied evidence. One targeted repair pass can propose changes; blocking issues still require human resolution or acknowledgment.
 
-Queued, processing and review jobs may be cancelled. Cancelled/failed jobs can be retried. The worker commits batches of up to 25 passages and their progress together. A restart resumes from the last completed batch. Unique `(job, ordinal)` constraints prevent duplicate segments. Cancellation races use an optimistic status check, rolling back a batch if cancellation won. The single worker sleeps between batches and performs no provider calls, so there is no token cost.
+All passes use the captured reconstruction provider/model. Structured output and evidence ordinals are validated locally, including for Lemonade. After one repair attempt, malformed output pauses the stage. Raw passages never become fallback facts. Fixture mode preserves and normalizes the source, then pauses for a configured model.
 
-A malformed file becomes a failed job with its original bytes still available. Retrying identical malformed bytes will fail again: upload a corrected copy as a new source. This is deliberate preservation, not in-place repair. Parser errors terminate that attempt; database outages are retried by the worker.
+Each validated stage result, draft revision, coverage checkpoint, and usage saves together. Worker claims use concurrency checks; leases renew every 20 seconds and expire after two minutes. Cancellation or lost ownership prevents late results from committing. Retry continues at the incomplete stage. A remote call interrupted before persistence may be repeated and billed again.
 
-## What review means
+Budgets default to 24,000 input characters including instructions/schema/context, 3,000 output tokens, and 100 calls. Limits are adjustable before upload and on retry. Calls include repair attempts. Budget exhaustion pauses processing. Reported tokens are shown where available; monetary costs are not invented.
 
-Each passage becomes a verbatim **candidate**, initially unchecked and narrator-only. This is deterministic segmentation, not semantic extraction. Reviewers must edit candidates into useful statements, accept/reject them, and explicitly set visibility. Original passages remain accessible through evidence links after edits. Rejected passages remain in the source but never enter approved canon.
+## Human approval boundary
 
-Approve only material facts that are actually supported. Keep rumors and speculation out of public canon, and keep secrets narrator-only. Structured rumor/belief types and character-specific knowledge are later work. The fixture generation interface receives only accepted public facts; private facts are withheld completely.
+The review page shows the overview, coverage, conflicts, missing information, category filters, search, 20 proposals per page, and an evidence drawer. Clear proposals are included by default. Users can edit/exclude proposals, save issue resolutions, and edit resume fields or advanced JSON. Saved decisions survive reload; proposal revisions reject stale writes.
 
-The state editor starts with the existing checkpoint. Set the final scene, time, objective, condition, skills, inventory quantities and participants yourself. It accepts the documented JSON shape shown in the UI. Negative inventory, oversized fields, missing fields, or invalid JSON are rejected. Approval commits decisions and the new checkpoint together. Approval cannot overwrite a branch that advanced since upload: fork the upload's original checkpoint and import on that branch instead.
+Approval requires complete coverage and agent review, resolution/acknowledgment of blocking issues, a usable location and objective, valid state/evidence, and agreement between inventory/skill claims and the resume. The default empty state cannot be approved as a reconstructed ending. Unknown information can remain explicitly unknown after acknowledgment. Unresolved character references must be corrected or excluded.
 
-Imports do not replace the story view with the original transcript. That transcript remains in source review; the story view records approval and starts its continuation there. Searchable transcript history, automatic final-scene detection, agent reconstruction, correction reconciliation and portable campaign export are later milestones.
+Approval atomically saves source history, evidence-backed canon, characters, relationships, knowledge, world definitions, events, threads, the pending-action summary, and resume checkpoint. Imported messages remain available for continuity retrieval.
 
-For the supplied Azugot transcript, future reconstruction should explicitly review initial-character corrections, source text truncation, incomplete HUDs, unclear message boundaries, and differing scene-header versus prose times/locations. It must preserve that campaign's own mechanics rather than substituting Crownspire's example.
+Approval cannot overwrite a branch that advanced after upload. Fork the original checkpoint and import there instead. The original source remains downloadable regardless of parse, provider, review, or approval outcome.
+
+## APIs and compatibility
+
+- Upload: `POST /api/branches/{id}/imports` with multipart `file`, `inputCharacterLimit`, `outputTokenLimit`, `maxCalls`.
+- Draft: `GET /api/imports/{id}/draft`; proposals: `GET .../proposals?page=0&category=fact&q=key&history=false`.
+- Evidence: `GET .../evidence?page=0&ordinals=0,1`. API ordinals start at zero; UI passage numbers start at one.
+- Saved edits: `PUT .../proposals/{proposalId}` with `{ revision, claim, excluded }`; `PUT .../issues/{issueId}` with `{ revision, resolution }`; `PUT .../resume` with `{ revision, resume }`.
+- Retry: `POST .../resume-processing` with optional provider/model and budgets. Subsequent stage results record the selected model.
+- Approval: `POST .../approval` with `{ expectedCheckpointId, revision }`.
+- Reanalysis: `POST .../reanalyze` with processing budgets creates a new draft from the same source.
+
+Legacy imports remain inspectable. Active legacy jobs pause during migration. Reanalysis creates a fresh draft without changing approved campaigns. Portable export version 3 includes sections, draft versions, issues, stage results, and saved decisions; versions 1 and 2 remain readable. Restored active jobs pause and do not copy leases.
+
+The model can still misread narrative meaning. Evidence, chronology, explicit uncertainty, and human approval remain necessary.

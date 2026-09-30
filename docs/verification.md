@@ -1,33 +1,46 @@
-# Verification history
+# Verification
 
-## Autonomous storyteller — September 29, 2026
+## September 29, 2026 combined storyteller merge
 
-- **72 passing .NET tests**: the original 12 foundation tests, 39 provider/configuration/transport cases, and 21 engine cases. Engine coverage includes perception isolation, privately moved/introduced entities, ordered reactions, NPC/beat limits, off-screen time advancement, d20 totals including natural 1/20, persisted rolls/steps across retries, invalid outcome regeneration, handoff after movement, cancellation, startup recovery, stale drafts, graph/fork evidence and memory ownership/author corrections.
-- **TypeScript/Vite production build passed**. No new frontend dependency was required.
-- **Migration consistency passed**. The new PostgreSQL migration applied on an isolated database; previous rows receive `{}` defaults for world/draft data and use the legacy-state fallback.
-- **Real HTTP/PostgreSQL storyteller smoke passed**: graph history, cross-branch checkpoint rejection, memory edit/pin/removal, two independently configured role profiles, compatible HTTP generation, saved-step/dice retry, explicit cancellation and concurrent turn reservation. Its temporary loopback provider returns protocol fixtures, so it verifies transport/orchestration rather than actual inference.
-- **Foundation HTTP smoke and restart persistence passed**: checkpoints, messages, state, original source checksum and bytes survived backend restart.
-- **Protected access/client cancellation smoke passed**: missing token/custom write header rejection, aborted-request cancellation and unchanged preceding checkpoint.
-- **Browser checks passed** for creating Crownspire, watching Live activity during generation, spoiler-gated character/dice panels, a saved memory correction, graph entity selection and evidence. The default compact viewport was inspected and checkbox layout corrected. Screenshot proof is saved as a task artifact.
-- **Compose validation and whitespace checks passed**. NuGet vulnerability-feed retrieval emitted NU1900 in this network-restricted environment; package compilation/tests completed successfully.
+- **102 .NET tests pass**, retaining provider/continuity and transcript reconstruction coverage alongside autonomous engine tests. Four merge regression tests verify graph/memory preservation across mechanics and canon corrections, narrator-only scene transitions, portable paused dice drafts, and imported fact ownership.
+- **Frontend production build and EF pending-model check pass.** The autonomous JSON turn endpoint and explicit narrator-only streaming endpoint coexist; vendor and character/director profiles remain available.
+- **PostgreSQL storyteller HTTP smoke passes** on a disposable database: graph history, memory correction/pinning/removal, perception boundaries, HTTP agent adapters, preserved steps/dice across retry, cancellation, and concurrent turn reservation.
+- **Combined foundation and import HTTP smoke pass**: both turn protocols, stale writes, nine provider profiles, original source preservation, 453-passage reconstruction, saved review edits, approval, portable restore, malformed output pause and explicit retry.
 
-The run used a disposable PostgreSQL 17 container, local .NET backend and Vite frontend. Existing application stacks and the user's transcript were left untouched. Temporary test services were stopped afterward.
+HTTP agent/reconstruction providers in this validation are local scripted protocol fixtures. No actual model inference or paid provider calls are needed for merge validation. Main database backup precedes the Docker rebuild; existing data and environment configuration are preserved.
 
-To reproduce the engine smoke, run a disposable backend with `CHARACTER_BASE_URL` and `DIRECTOR_BASE_URL` set to `http://127.0.0.1:11449/v1`, both role API keys set to the local test placeholder `local-smoke-token`, then run:
+## September 29, 2026 import rework
+
+- **35 .NET tests pass**, including 450-paragraph DOCX reconstruction, versioned consolidation and evidence, state/entity/secret approval, invalid JSON pause, restart/portable draft recovery, missing-scene rejection, stale revision and lease/cancellation conflicts.
+- **Fresh PostgreSQL migration and HTTP smoke pass** on isolated Compose project `open-occ-import-verify`, port 8082. A 453-passage synthetic transcript becomes 10 proposals; approval preserves the ending, characters, relationships, knowledge, inventory and source history. Saved edits, stale-edit rejection, export/restore, exact source checksum, invalid-model pause and explicit model-switch retry are checked.
+- **Frontend production/container builds and EF pending-model check pass.** The foundation HTTP smoke also passes, including fixture preservation without fallback facts or empty checkpoint approval.
+- **Desktop browser verification passes** for category filtering, saved character edits, citation evidence and resume checkpoint saving. Source history stays collapsed in the main chat. Screenshot: ignored `.local/import-review.jpg`.
+- Reconstruction responses in these tests are **scripted/recorded, not actual AI inference**. This verifies the pipeline and contracts, not reconstruction quality on the user's Story transcript. That transcript and real Lemonade reconstruction remain deferred.
+
+To reproduce the long PostgreSQL check, start `node tests/import-model.mjs` in one terminal, then run in another:
 
 ```powershell
-node tests/engine-smoke.mjs http://127.0.0.1:5080
+docker compose --env-file .env.example -p open-occ-import-verify -f docker-compose.yml -f tests/import-compose.yml up --build -d
+node tests/import-smoke.mjs http://localhost:8082
+node tests/smoke.mjs http://localhost:8082
+docker compose --env-file .env.example -p open-occ-import-verify -f docker-compose.yml -f tests/import-compose.yml stop
 ```
 
-The script owns a temporary protocol server on port 11449 and adds synthetic campaigns. Set `APP_ACCESS_TOKEN` in the test terminal when the backend is protected. Actual model inference/quality, token streaming, reusable worlds, full progression and automatic transcript reconstruction remain unverified or deferred. Configure and evaluate chosen live models separately.
+This isolated stack uses only synthetic data and an explicitly enabled synthetic DeepSeek-compatible profile. No paid provider calls are made. Stop the synthetic model terminal afterward; the stopped test volume remains recoverable.
 
-## Original foundation — September 11, 2026
+## September 12, 2026 provider/continuity update
+
+- **27 .NET tests pass.** Added recorded wire-contract coverage for OpenAI Responses SSE/structured output, Anthropic Messages SSE/structured output, OpenAI-compatible Chat Completions SSE/JSON mode, Lemonade Chat Completions without undocumented JSON mode, and Ollama NDJSON/schema output. Continuity, DOCX/HTML/Markdown parsing, correction auditing, retrieval, portability, world/version linking, deterministic mechanics, and evidence-linked reconstruction are covered.
+- Live Lemonade verification completed: a one-passage import reached `review` with one evidence-linked fallback candidate when the local model could not produce valid structured JSON; the job remained resumable and no authoritative state was changed.
+- Backend builds with zero warnings/errors; the EF pending-model check passes after the world/mechanics/event and import-lease migrations; the frontend TypeScript/Vite production build passes; Compose configuration validation passes.
+- The HTTP smoke script validates the NDJSON turn stream, all seven implemented adapter capabilities, stale-write rejection, import review, and evidence isolation. It temporarily routes the disposable smoke campaign through the fixture and restores the original provider routing afterward.
+- Live PostgreSQL verification created a versioned world, linked a campaign to its version, applied deterministic inventory mechanics, and confirmed the branch response exposes the event ledger and new world model.
 
 Verified locally on September 11, 2026 with .NET SDK 10.0.400, Node 26.7.0, Docker Desktop and Docker Compose 5.1.4. Container builds use .NET 10, Node 24, Nginx and PostgreSQL 17.
 
-## Completed checks
+## Earlier foundation checks (September 11)
 
-- **12 passing .NET tests**, including relational persistence across DbContext lifetimes; checkpoint branching; exclusion of future turns/facts; stale-turn rejection; resumable 25-passage import batches; byte preservation; fact/evidence counts; review validation; public/private filtering; provider stub contracts; fixture cancellation; cancellation winning against an in-flight import transaction; and rejection of approval after a branch advances.
+- The then-current **12-test foundation suite passed**, including relational persistence, checkpoint branching, stale-turn rejection, resumable deterministic imports, review validation, fixture cancellation, and cancellation/approval races. The current 26-test result is recorded above.
 - **TypeScript and Vite production builds passed**, both locally and in the frontend image.
 - **EF model consistency passed**: no pending model changes after generating the checked-in initial migration.
 - **Fresh Compose build/start passed** with frontend, backend and PostgreSQL. The backend applied the migration and became healthy.
@@ -75,6 +88,6 @@ docker compose --env-file .env.example -p open-occ-verify stop
 
 The separate restore-check project can likewise be stopped with `-p open-occ-restore-check`. Volumes and the ignored `.local/open-occ-verify.dump` retain the synthetic verification data. Neither stack imports the user's Word transcript or makes remote AI requests.
 
-## Original foundation scope limits
+## Scope limits
 
-The September 11 checks validated the foundation only. See the September 29 results above for the implemented storyteller capabilities and current limits. SQLite tests complement real PostgreSQL smoke; they do not claim to reproduce every PostgreSQL concurrency behavior.
+The live provider protocols are verified against recorded contract responses; real paid-provider connectivity remains opt-in through the settings page and is not part of the deterministic test stack. Embedding/vector retrieval and mobile browser testing remain outside this foundation. Portable campaign export/reimport is covered by SQLite round-trip tests and a live PostgreSQL endpoint check. SQLite tests complement the PostgreSQL smoke; they do not claim to reproduce every PostgreSQL concurrency behavior.

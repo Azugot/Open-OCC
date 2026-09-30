@@ -1,14 +1,18 @@
-# Story workspace architecture
+# Foundation architecture
 
 One ASP.NET Core application owns campaign APIs, provider contracts, durable import jobs and EF persistence. React/Vite compiles to static assets served by Nginx, which proxies `/api` to the backend. PostgreSQL is internal to Compose. There are no extra worker deployments, Redis or vector databases.
 
 ## State and history
 
-Messages and checkpoints are append-only through the API. Each branch points to its current checkpoint and has an optimistic concurrency revision. A turn captures the expected checkpoint, persists a generation record, obtains a fixture result, then saves both messages and the new checkpoint in one database transaction. Competing/stale turns fail without a partial commit.
+Autonomous turns use separate perception-filtered character sessions and a director. Validated proposals, rulings, events and server d20 rolls are saved in a generation draft. Retry reuses completed work and rolls; cancellation leaves the branch unchanged. The final narrative, state, graph and memory snapshot commit together against the expected checkpoint. Each checkpoint stores its world JSON in PostgreSQL, so historical views and forks retain only established knowledge. Narrator-only streamed turns remain available through `/api/branches/{id}/turns/stream` with structured continuity extraction.
 
-Forks copy checkpoints and messages only through the chosen sequence. Approved facts are copied only when their effective sequence is at or before that checkpoint, with evidence preserved. Pending and rejected import candidates do not cross into a fork. This favors explicit isolation over storage optimization in the first release.
+Messages and checkpoints are append-only through the API. Each branch points to its current checkpoint and has an optimistic concurrency revision. A turn captures the expected checkpoint and assembled context, streams narration, obtains a structured transition from the memory route, validates mechanics, then saves messages, complete state, new facts, thread updates, and checkpoint in one transaction. Competing/stale turns fail without a partial commit.
+
+World definitions are reusable and versioned independently of campaigns; a campaign pins one world version. Characters are campaign-level records, while relationships and per-character knowledge are branch-scoped and sequence-aware. Forks copy checkpoints, messages, accepted facts, threads, relationships, knowledge, mechanics entries, events, and the latest summary through the chosen sequence. Pending and rejected import candidates do not cross into a fork.
 
 Import approval validates the state and all decisions before saving. Its branch revision and the job status protect against concurrent generation or duplicate approval. A source accepted before a branch advances cannot later overwrite that new state.
+
+New imports keep normalized evidence, chronological sections, versioned proposals, issues, resume drafts and stage results separate from canon. The reconstruction worker performs extraction, reconciliation, ending reconstruction, an independent audit and one targeted repair. Calls and token usage are durable; renewable leases and concurrency tokens prevent competing workers from publishing results. Invalid output receives one schema repair, then pauses without generating fallback facts or a default scene. Review edits persist before approval; approval checks source citations, unresolved blockers, scene usability and the captured branch head before atomically publishing the reviewed state and entities. Portable exports include draft progress and decisions; restored active jobs pause until explicitly resumed.
 
 ## Safety boundaries
 
@@ -16,10 +20,12 @@ All story/model/source text is rendered as escaped text with preserved whitespac
 
 An optional bearer token gates `/api`. Browser storage holds that token for the current tab only. Default Compose binding is loopback, with no database port published. External hosting requires configured access control and HTTPS. The three containers are not intended as an anonymous public multi-user service.
 
-## Next milestones
+## Continuity boundary
 
-The autonomous slice now uses checkpoint world JSON, persisted generation drafts, independent perception-filtered character contexts, structured director resolutions, server-generated d20 checks, scoped memory retrieval and an interactive graph. See [storyteller behavior](storyteller.md). OpenAI-compatible and Ollama adapters support final JSON responses; token streaming is deferred.
+Context assembly includes the current complete state, 16 recent messages, up to 35 relevant accepted facts, character knowledge scopes, and 20 active threads ordered by importance. The narrator receives private canon because it must preserve secrets, but its prompt forbids an NPC from revealing a secret unless that NPC is in `knownBy`. Rumors/beliefs remain typed uncertainty. Promises and deadlines use durable narrative threads.
 
-Remaining milestones include agent-assisted extraction/reconstruction, evaluation against the supplied transcript, reusable world definitions, full progression mechanics, edit/regenerate shortcuts, portable export/reimport and distributed worker leasing.
+The memory route must return a complete state or `null` for unchanged, plus bounded fact/thread updates. Inventory and skill mutations are rejected unless their key appears in the player action or generated narrative. Schema/semantic failure gets one repair attempt; failure leaves the branch unchanged.
 
-The root specification remains the product authority; this slice adds the autonomous storyteller while keeping transcript reconstruction and later features explicit.
+Future work includes embedding/vector retrieval and richer authoring controls. The current foundation includes deterministic inventory/skill mechanics with a ledger, event history and rolling summaries, checkpoint state diffs, audited fact corrections, bounded historical retrieval with search diagnostics, portable JSON campaign export/reimport, and expiring import-job leases for safer recovery.
+
+The root specification remains the product authority. This implementation deliberately satisfies its first foundation objective and documents later-phase features as unfinished.

@@ -19,15 +19,25 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { api, downloadSource, post } from "./api";
+import {
+  api,
+  downloadCampaignExport,
+  downloadSource,
+  post,
+  streamTurn,
+} from "./api";
 import StoryEngine from "./StoryEngine";
+import ImportReview from "./ImportReview";
 import type {
   Branch,
   Campaign,
+  Fact,
   Job,
   Profiles,
   Review,
+  RetrievalHit,
   State,
+  Thread,
   Workspace,
 } from "./api";
 
@@ -38,7 +48,11 @@ type Decision = {
   accept: boolean;
   text: string;
   visibility: string;
+  kind: string;
+  confidence: number;
+  knownBy: string[];
 };
+type ReviewedThread = Thread & { accept: boolean };
 
 export default function App() {
   const [page, setPage] = useState<Page>("library");
@@ -52,15 +66,33 @@ export default function App() {
   const [name, setName] = useState("");
   const [synthetic, setSynthetic] = useState(true);
   const [action, setAction] = useState("");
+  const [draft, setDraft] = useState("");
+  const [turnMode, setTurnMode] = useState<"autonomous" | "narrator">(
+    "autonomous",
+  );
   const [token, setToken] = useState(sessionStorage.getItem("occ-token") || "");
   const [profiles, setProfiles] = useState<Profiles | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [review, setReview] = useState<Review | null>(null);
   const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [threadDecisions, setThreadDecisions] = useState<ReviewedThread[]>([]);
   const [resumeState, setResumeState] = useState("");
   const [forkName, setForkName] = useState("An alternate path");
   const [forkCheckpoint, setForkCheckpoint] = useState("");
+  const [forkAction, setForkAction] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [importInputLimit, setImportInputLimit] = useState(24000);
+  const [importOutputLimit, setImportOutputLimit] = useState(3000);
+  const [importCallLimit, setImportCallLimit] = useState(100);
+  const [selectedExportFile, setSelectedExportFile] = useState<File | null>(
+    null,
+  );
+  const [editingFact, setEditingFact] = useState<string | null>(null);
+  const [correctionText, setCorrectionText] = useState("");
+  const [correctionReason, setCorrectionReason] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchHits, setSearchHits] = useState<RetrievalHit[]>([]);
+  const [authorView, setAuthorView] = useState(false);
   const generation = useRef<AbortController | null>(null);
   const end = useRef<HTMLDivElement>(null);
   const loadLibrary = useCallback(
@@ -115,6 +147,7 @@ export default function App() {
       setBranchId(id);
       setReview(null);
       setAction("");
+      setAuthorView(false);
       setPage("story");
     });
   const navigate = (next: Page) => {
@@ -136,17 +169,98 @@ export default function App() {
       setName("");
       await loadLibrary();
     });
+  const importCampaignExport = () =>
+    run(async () => {
+      if (!selectedExportFile) return;
+      const portable = JSON.parse(await selectedExportFile.text());
+      const branch = await post<Branch>("/campaigns/import", {
+        export: portable,
+      });
+      await loadLibrary();
+      await loadWorkspace(branch.id);
+      setBranchId(branch.id);
+      setPage("story");
+      setSelectedExportFile(null);
+      setNotice("Campaign export restored as a new independent copy.");
+    });
+  const correctFact = (fact: Fact) =>
+    run(async () => {
+      if (!workspace || !correctionText.trim() || !correctionReason.trim())
+        return;
+      await post(`/branches/${workspace.branch.id}/facts/${fact.id}/correct`, {
+        expectedCheckpointId: workspace.checkpoint.id,
+        text: correctionText,
+        reason: correctionReason,
+        visibility: fact.visibility,
+        kind: fact.kind,
+        confidence: fact.confidence,
+        knownBy: JSON.parse(fact.knownByJson || "[]"),
+      });
+      await loadWorkspace(workspace.branch.id);
+      setEditingFact(null);
+      setCorrectionText("");
+      setCorrectionReason("");
+      setNotice("Canon correction saved with an audit record.");
+    });
+  const searchMemory = () =>
+    run(async () => {
+      if (!workspace || !searchQuery.trim()) return;
+      setSearchHits(
+        await api<RetrievalHit[]>(
+          `/branches/${workspace.branch.id}/search?q=${encodeURIComponent(searchQuery)}`,
+        ),
+      );
+    });
+  const regenerateLastTurn = () =>
+    run(async () => {
+      if (!workspace) return;
+      const current = workspace.checkpoints.find(
+        (c) => c.id === workspace.checkpoint.id,
+      );
+      const previous =
+        current &&
+        workspace.checkpoints.find((c) => c.sequence === current.sequence - 2);
+      const lastAction =
+        [...workspace.messages].reverse().find((m) => m.role === "user")
+          ?.content || "";
+      if (!previous)
+        throw new Error("There is no earlier checkpoint to regenerate from.");
+      const branch = await post<Branch>(
+        `/branches/${workspace.branch.id}/fork`,
+        {
+          checkpointId: previous.id,
+          name: `Regenerated · ${new Date().toLocaleTimeString()}`,
+        },
+      );
+      await loadWorkspace(branch.id);
+      setBranchId(branch.id);
+      setAction(lastAction);
+      setPage("story");
+      setNotice(
+        `A new branch is ready in ${turnMode === "autonomous" ? "autonomous director" : "narrator streaming"} mode. Edit the action if needed, then continue.`,
+      );
+    });
   const send = () =>
     run(async () => {
       if (!workspace) return;
       const controller = new AbortController();
       generation.current = controller;
       try {
-        await post(
-          `/branches/${workspace.branch.id}/turns`,
-          { action, expectedCheckpointId: workspace.checkpoint.id },
-          controller.signal,
-        );
+        setDraft("");
+        if (turnMode === "narrator") {
+          await streamTurn(
+            `/branches/${workspace.branch.id}/turns/stream`,
+            { action, expectedCheckpointId: workspace.checkpoint.id },
+            (text) => setDraft((old) => old + text),
+            controller.signal,
+          );
+        } else {
+          await post(
+            `/branches/${workspace.branch.id}/turns`,
+            { action, expectedCheckpointId: workspace.checkpoint.id },
+            controller.signal,
+          );
+        }
         setAction("");
       } catch (e) {
         if ((e as Error).name !== "AbortError") throw e;
@@ -154,6 +268,7 @@ export default function App() {
       } finally {
         generation.current = null;
         await loadWorkspace(workspace.branch.id);
+        setDraft("");
       }
     });
   const inspect = (id: string) =>
@@ -169,9 +284,21 @@ export default function App() {
           accept: c.fact.reviewStatus === "accepted",
           text: c.fact.text,
           visibility: c.fact.visibility,
+          kind: c.fact.kind,
+          confidence: c.fact.confidence,
+          knownBy: JSON.parse(c.fact.knownByJson || "[]"),
         })),
       );
-      setResumeState(JSON.stringify(workspace?.state, null, 2));
+      setResumeState(
+        data.job.proposedStateJson
+          ? JSON.stringify(JSON.parse(data.job.proposedStateJson), null, 2)
+          : "",
+      );
+      setThreadDecisions(
+        JSON.parse(data.job.proposedThreadsJson || "[]").map(
+          (thread: Thread) => ({ ...thread, accept: true }),
+        ),
+      );
     });
   const approve = () =>
     run(async () => {
@@ -186,6 +313,7 @@ export default function App() {
         expectedCheckpointId: workspace.checkpoint.id,
         state,
         decisions,
+        threads: threadDecisions,
       });
       await loadWorkspace(workspace.branch.id);
       setReview(null);
@@ -332,6 +460,22 @@ export default function App() {
               <button className="primary" onClick={() => setNewCampaign(true)}>
                 <Plus size={17} /> New campaign
               </button>
+              <label className="light-button export-import">
+                <Upload size={15} /> Restore export
+                <input
+                  type="file"
+                  accept=".json"
+                  hidden
+                  onChange={(e) =>
+                    setSelectedExportFile(e.target.files?.[0] ?? null)
+                  }
+                />
+              </label>
+              {selectedExportFile && (
+                <button className="light-button" onClick={importCampaignExport}>
+                  Restore {selectedExportFile.name}
+                </button>
+              )}
             </div>
             <div className="hero">
               <div>
@@ -426,8 +570,8 @@ export default function App() {
               <p>
                 <strong>A world you can explore.</strong> Independent
                 characters, a director, world graphs and memory. Fixture
-                profiles need no key; live models are configurable. Imports
-                use your review to establish canon.
+                profiles need no key; live models are configurable. Imports use
+                your review to establish canon.
               </p>
             </div>
           </section>
@@ -440,25 +584,94 @@ export default function App() {
                   <span className="eyebrow">{workspace.branch.name}</span>
                   <h1>{workspace.campaign.name}</h1>
                 </div>
-                <span className="badge">Director turns</span>
+                <div className="story-heading-actions">
+                  <button
+                    className="light-button"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void regenerateLastTurn()}
+                  >
+                    <GitBranch size={15} /> Regenerate
+                  </button>
+                  <button
+                    className="light-button"
+                    type="button"
+                    onClick={() =>
+                      void run(() =>
+                        downloadCampaignExport(
+                          workspace.campaign.id,
+                          workspace.campaign.name,
+                        ),
+                      )
+                    }
+                  >
+                    <Download size={15} /> Export
+                  </button>
+                  <span className="badge">
+                    {turnMode === "autonomous"
+                      ? "Director turns"
+                      : "Narrator stream"}
+                  </span>
+                </div>
               </div>
               <div className="scene-location">
                 <MapPin size={15} /> {workspace.state.location}
               </div>
               <div className="messages">
-                {workspace.messages.map((m) => (
-                  <article key={m.id} className={`message ${m.role}`}>
+                {authorView &&
+                  workspace.messages.some(
+                    (m) => m.provider === "imported-source",
+                  ) && (
+                    <details className="panel imported-history">
+                      <summary>
+                        Preserved transcript history ·{" "}
+                        {
+                          workspace.messages.filter(
+                            (m) => m.provider === "imported-source",
+                          ).length
+                        }{" "}
+                        passages
+                      </summary>
+                      <p>
+                        Original source passages, not newly generated narration.
+                        Browse import evidence for citations and review
+                        decisions.
+                      </p>
+                      {workspace.messages
+                        .filter((m) => m.provider === "imported-source")
+                        .map((m) => (
+                          <article key={m.id} className={`message ${m.role}`}>
+                            <div className="message-label">
+                              SOURCE · {m.role}
+                            </div>
+                            <div className="prose">{m.content}</div>
+                          </article>
+                        ))}
+                    </details>
+                  )}
+                {workspace.messages
+                  .filter((m) => m.provider !== "imported-source")
+                  .map((m) => (
+                    <article key={m.id} className={`message ${m.role}`}>
+                      <div className="message-label">
+                        {m.role === "user"
+                          ? "YOUR ACTION"
+                          : m.role === "system"
+                            ? "CAMPAIGN RECORD"
+                            : "THE STORY"}
+                        <span>{m.role === "assistant" ? m.provider : ""}</span>
+                      </div>
+                      <div className="prose">{m.content}</div>
+                    </article>
+                  ))}
+                {draft && (
+                  <article className="message assistant streaming">
                     <div className="message-label">
-                      {m.role === "user"
-                        ? "YOUR ACTION"
-                        : m.role === "system"
-                          ? "CAMPAIGN RECORD"
-                          : "THE STORY"}
-                      <span>{m.role === "assistant" ? m.provider : ""}</span>
+                      THE STORY <span>streaming</span>
                     </div>
-                    <div className="prose">{m.content}</div>
+                    <div className="prose">{draft}</div>
                   </article>
-                ))}
+                )}
                 <div ref={end} />
               </div>
               <form
@@ -468,6 +681,21 @@ export default function App() {
                   void send();
                 }}
               >
+                <label className="turn-mode">
+                  Story mode
+                  <select
+                    value={turnMode}
+                    disabled={busy}
+                    onChange={(e) =>
+                      setTurnMode(e.target.value as "autonomous" | "narrator")
+                    }
+                  >
+                    <option value="autonomous">
+                      Autonomous characters & director
+                    </option>
+                    <option value="narrator">Narrator only · streaming</option>
+                  </select>
+                </label>
                 <textarea
                   aria-label="Your next action"
                   placeholder="What do you do next?"
@@ -477,7 +705,11 @@ export default function App() {
                   disabled={busy}
                 />
                 <div>
-                  <span>Free-form actions · Director-coordinated story</span>
+                  <span>
+                    {turnMode === "autonomous"
+                      ? "Director-coordinated story · follow progress in Live world"
+                      : "Free-form actions · streamed narration"}
+                  </span>
                   {generation.current ? (
                     <button
                       type="button"
@@ -499,6 +731,18 @@ export default function App() {
             <aside className="state-panel">
               <span className="eyebrow">AT THIS MOMENT</span>
               <h2>Current state</h2>
+              <label className="check-label author-toggle">
+                <input
+                  type="checkbox"
+                  checked={authorView}
+                  onChange={(e) => {
+                    setAuthorView(e.target.checked);
+                    setEditingFact(null);
+                    setSearchHits([]);
+                  }}
+                />
+                Author tools · reveals secrets
+              </label>
               <div className="state-section">
                 <h3>SCENE</h3>
                 <p>{workspace.state.location}</p>
@@ -542,21 +786,162 @@ export default function App() {
                   <small>No participants established</small>
                 )}
               </div>
+              {authorView && workspace.world && (
+                <div className="state-section">
+                  <h3>WORLD FOUNDATION</h3>
+                  <p>
+                    {workspace.world.world.name} · v
+                    {workspace.world.version.version}
+                  </p>
+                  <small>
+                    {workspace.world.world.description ||
+                      "Versioned world rules are active."}
+                  </small>
+                </div>
+              )}
+              {authorView && workspace.characters?.length ? (
+                <div className="state-section">
+                  <h3>CHARACTERS</h3>
+                  {workspace.characters.slice(0, 8).map((character) => (
+                    <div className="fact" key={character.id}>
+                      <p>{character.name}</p>
+                      <small>{character.description || character.status}</small>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {authorView && (
+                <div className="state-section">
+                  <h3>ACTIVE THREADS</h3>
+                  {workspace.threads.filter((t) => t.status === "active")
+                    .length ? (
+                    workspace.threads
+                      .filter((t) => t.status === "active")
+                      .map((t) => (
+                        <div className="fact" key={t.id || t.title}>
+                          <span className="badge">{t.kind}</span>
+                          <p>{t.title}</p>
+                          <small>{t.details}</small>
+                        </div>
+                      ))
+                  ) : (
+                    <small>
+                      No active promises, deadlines, or open threads
+                    </small>
+                  )}
+                </div>
+              )}
               <div className="state-section">
                 <h3>REVIEWED FACTS</h3>
-                {workspace.facts.some((f) => f.visibility === "public") ? (
+                {workspace.facts.some(
+                  (f) => authorView || f.visibility === "public",
+                ) ? (
                   workspace.facts
-                    .filter((f) => f.visibility === "public")
+                    .filter((f) => authorView || f.visibility === "public")
                     .map((f) => (
                       <div className="fact" key={f.id}>
-                        <span className="badge">Public</span>
+                        <span className="badge">
+                          {f.visibility === "narrator"
+                            ? "Narrator only"
+                            : "Public"}
+                        </span>
                         <p>{f.text}</p>
+                        {authorView &&
+                          (editingFact === f.id ? (
+                            <div className="fact-edit">
+                              <textarea
+                                value={correctionText}
+                                onChange={(e) =>
+                                  setCorrectionText(e.target.value)
+                                }
+                                placeholder="Corrected canon"
+                                maxLength={1000}
+                              />
+                              <input
+                                value={correctionReason}
+                                onChange={(e) =>
+                                  setCorrectionReason(e.target.value)
+                                }
+                                placeholder="Why is this correction needed?"
+                                maxLength={1000}
+                              />
+                              <button
+                                type="button"
+                                disabled={
+                                  busy ||
+                                  !correctionText.trim() ||
+                                  !correctionReason.trim()
+                                }
+                                onClick={() => void correctFact(f)}
+                              >
+                                Save correction
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingFact(null)}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingFact(f.id);
+                                setCorrectionText(f.text);
+                              }}
+                            >
+                              Correct
+                            </button>
+                          ))}
                       </div>
                     ))
                 ) : (
                   <small>No public reviewed facts yet</small>
                 )}
               </div>
+              {authorView && (
+                <div className="state-section">
+                  <h3>MEMORY SEARCH</h3>
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void searchMemory();
+                    }}
+                  >
+                    <input
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search facts, scenes, threads"
+                    />
+                  </form>
+                  {searchHits.slice(0, 6).map((hit) => (
+                    <div className="fact" key={`${hit.type}-${hit.id}`}>
+                      <span className="badge">{hit.type}</span>
+                      <small>{hit.text}</small>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {authorView && workspace.summary?.text && (
+                <div className="state-section">
+                  <h3>ROLLING SUMMARY</h3>
+                  <small>{workspace.summary.text}</small>
+                </div>
+              )}
+              {authorView && workspace.mechanics?.length ? (
+                <div className="state-section">
+                  <h3>MECHANICS LEDGER</h3>
+                  {workspace.mechanics.slice(0, 6).map((entry) => (
+                    <div className="state-row" key={entry.id}>
+                      <span>{entry.subject}</span>
+                      <strong>
+                        {entry.delta > 0 ? `+${entry.delta}` : entry.delta}
+                      </strong>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               <div className="checkpoint-saved">
                 <Check size={16} /> Approved checkpoint saved
               </div>
@@ -601,6 +986,7 @@ export default function App() {
                   });
                   await loadWorkspace(b.id);
                   setBranchId(b.id);
+                  setAction(forkAction);
                   setPage("story");
                 });
               }}
@@ -629,6 +1015,15 @@ export default function App() {
                   required
                 />
               </label>
+              <label>
+                Edited action (optional)
+                <textarea
+                  value={forkAction}
+                  maxLength={4000}
+                  onChange={(e) => setForkAction(e.target.value)}
+                  placeholder="Set this before continuing on the new branch"
+                />
+              </label>
               <button className="primary" disabled={busy}>
                 <GitBranch size={16} /> Create branch
               </button>
@@ -653,6 +1048,15 @@ export default function App() {
                       if (!selectedFile) return;
                       const body = new FormData();
                       body.append("file", selectedFile);
+                      body.append(
+                        "inputCharacterLimit",
+                        String(importInputLimit),
+                      );
+                      body.append(
+                        "outputTokenLimit",
+                        String(importOutputLimit),
+                      );
+                      body.append("maxCalls", String(importCallLimit));
                       const job = await api<Job>(
                         `/branches/${branchId}/imports`,
                         { method: "POST", body },
@@ -668,11 +1072,14 @@ export default function App() {
                 >
                   <Upload size={30} strokeWidth={1.2} />
                   <h2>A whole history, a fresh beginning.</h2>
-                  <p>UTF-8 plain text or documented JSON · Up to 2 MiB</p>
+                  <p>
+                    UTF-8 text, Markdown, HTML, DOCX, or documented JSON · Up to
+                    2 MiB
+                  </p>
                   <input
                     aria-label="Transcript file"
                     type="file"
-                    accept=".txt,.json"
+                    accept=".txt,.md,.markdown,.html,.htm,.docx,.json"
                     onChange={(e) =>
                       setSelectedFile(e.target.files?.[0] ?? null)
                     }
@@ -680,9 +1087,54 @@ export default function App() {
                   <button className="primary" disabled={busy || !selectedFile}>
                     Preserve & import
                   </button>
+                  <details>
+                    <summary>Processing budget</summary>
+                    <label>
+                      Input characters per call
+                      <input
+                        type="number"
+                        min={12000}
+                        max={120000}
+                        value={importInputLimit}
+                        onChange={(e) =>
+                          setImportInputLimit(Number(e.target.value))
+                        }
+                      />
+                    </label>
+                    <label>
+                      Output tokens per call
+                      <input
+                        type="number"
+                        min={1000}
+                        max={12000}
+                        value={importOutputLimit}
+                        onChange={(e) =>
+                          setImportOutputLimit(Number(e.target.value))
+                        }
+                      />
+                    </label>
+                    <label>
+                      Maximum model calls
+                      <input
+                        type="number"
+                        min={1}
+                        max={1000}
+                        value={importCallLimit}
+                        onChange={(e) =>
+                          setImportCallLimit(Number(e.target.value))
+                        }
+                      />
+                    </label>
+                    <small>
+                      Calls include analysis, reconciliation, final-scene
+                      reconstruction, review, and repairs. Processing pauses at
+                      the budget. Provider pricing is not estimated.
+                    </small>
+                  </details>
                   <small>
-                    Word documents must first be exported as plain text. Sources
-                    are never sent to AI in this milestone.
+                    The selected reconstruction provider receives transcript
+                    batches. Imported facts remain reviewable before becoming
+                    canon.
                   </small>
                 </form>
                 <div className="panel">
@@ -696,7 +1148,8 @@ export default function App() {
                       <div>
                         <strong>Import {j.id.slice(0, 8)}</strong>
                         <small>
-                          {j.status} · {j.processed}/{j.total || "?"} segments
+                          {j.status} · {j.stage || "legacy"} · {j.processed}/
+                          {j.total || "?"} passages
                         </small>
                         {j.error && (
                           <small className="text-error">{j.error}</small>
@@ -727,26 +1180,43 @@ export default function App() {
                           Cancel
                         </button>
                       )}
-                      {["cancelled", "failed"].includes(j.status) && (
-                        <button
-                          disabled={busy}
-                          onClick={() =>
-                            void run(async () => {
-                              await post(`/imports/${j.id}/retry`);
-                              setJobs(
-                                await api<Job[]>(
-                                  `/branches/${branchId}/imports`,
-                                ),
-                              );
-                            })
-                          }
-                        >
-                          Resume
-                        </button>
-                      )}
+                      {j.method !== "agent-v2" &&
+                        ["cancelled", "failed"].includes(j.status) && (
+                          <button
+                            disabled={busy}
+                            onClick={() =>
+                              void run(async () => {
+                                await post(`/imports/${j.id}/retry`);
+                                setJobs(
+                                  await api<Job[]>(
+                                    `/branches/${branchId}/imports`,
+                                  ),
+                                );
+                              })
+                            }
+                          >
+                            Resume
+                          </button>
+                        )}
                     </div>
                   ))}
                 </div>
+              </>
+            ) : review.job.method === "agent-v2" ? (
+              <>
+                <button className="text-button" onClick={() => setReview(null)}>
+                  <ArrowLeft size={16} /> All imports
+                </button>
+                <ImportReview
+                  id={review.job.id}
+                  expectedCheckpointId={workspace.checkpoint.id}
+                  onApproved={async () => {
+                    await loadWorkspace(workspace.branch.id);
+                    setReview(null);
+                    setPage("story");
+                    setNotice("Reviewed reconstruction approved.");
+                  }}
+                />
               </>
             ) : (
               <>
@@ -755,8 +1225,39 @@ export default function App() {
                 </button>
                 <div className="panel">
                   <span className="badge">{review.job.status}</span>
+                  <p>
+                    This legacy import used paragraph review. Reanalyze its
+                    unchanged source to consolidate claims and reconstruct the
+                    ending.
+                  </p>
+                  <button
+                    disabled={busy}
+                    onClick={() =>
+                      void run(async () => {
+                        const job = await post<Job>(
+                          `/imports/${review.job.id}/reanalyze`,
+                          {
+                            inputCharacterLimit: importInputLimit,
+                            outputTokenLimit: importOutputLimit,
+                            maxCalls: importCallLimit,
+                          },
+                        );
+                        await inspect(job.id);
+                      })
+                    }
+                  >
+                    Reanalyze preserved source
+                  </button>
                   <h2>{review.source.fileName}</h2>
                   <p className="hash">SHA-256 · {review.source.sha256}</p>
+                  <p>
+                    <strong>
+                      {review.job.method === "ai-reconstruction-v1"
+                        ? `AI reconstruction · ${review.job.provider} / ${review.job.model}`
+                        : "Deterministic passage review"}
+                    </strong>
+                  </p>
+                  {review.job.summary && <p>{review.job.summary}</p>}
                   <button
                     onClick={() =>
                       void run(async () =>
@@ -770,14 +1271,12 @@ export default function App() {
                     <Download size={15} /> Download unchanged original
                   </button>
                   <p>
-                    These candidates are verbatim source passages, not
-                    AI-extracted facts. Accept only statements you want as
-                    canon, edit their wording, and keep private information
-                    scoped to the narrator. Unchecked passages will be rejected;
-                    their source remains preserved.
+                    Every candidate remains linked to its original evidence.
+                    Accept only statements you want as canon, correct wording,
+                    uncertainty, and knowledge scope before approval.
                   </p>
                 </div>
-                {review.candidates.map((c, index) => (
+                {review.candidates.slice(0, 20).map((c, index) => (
                   <div className="panel candidate" key={c.fact.id}>
                     <label className="check-label">
                       <input
@@ -810,6 +1309,47 @@ export default function App() {
                       }
                     />
                     <label>
+                      Claim type
+                      <select
+                        disabled={review.job.status !== "review"}
+                        value={decisions[index]?.kind || "fact"}
+                        onChange={(e) =>
+                          setDecisions((old) =>
+                            old.map((d, i) =>
+                              i === index ? { ...d, kind: e.target.value } : d,
+                            ),
+                          )
+                        }
+                      >
+                        <option value="fact">Fact</option>
+                        <option value="rumor">Rumor</option>
+                        <option value="belief">Belief</option>
+                        <option value="secret">Secret</option>
+                        <option value="correction">Correction</option>
+                      </select>
+                    </label>
+                    <label>
+                      Confidence ·{" "}
+                      {Math.round((decisions[index]?.confidence ?? 1) * 100)}%
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        disabled={review.job.status !== "review"}
+                        value={decisions[index]?.confidence ?? 1}
+                        onChange={(e) =>
+                          setDecisions((old) =>
+                            old.map((d, i) =>
+                              i === index
+                                ? { ...d, confidence: Number(e.target.value) }
+                                : d,
+                            ),
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
                       Who may know this?
                       <select
                         disabled={review.job.status !== "review"}
@@ -830,6 +1370,28 @@ export default function App() {
                         <option value="public">Public knowledge</option>
                       </select>
                     </label>
+                    <label>
+                      Characters who know it (comma-separated)
+                      <input
+                        disabled={review.job.status !== "review"}
+                        value={(decisions[index]?.knownBy || []).join(", ")}
+                        onChange={(e) =>
+                          setDecisions((old) =>
+                            old.map((d, i) =>
+                              i === index
+                                ? {
+                                    ...d,
+                                    knownBy: e.target.value
+                                      .split(",")
+                                      .map((x) => x.trim())
+                                      .filter(Boolean),
+                                  }
+                                : d,
+                            ),
+                          )
+                        }
+                      />
+                    </label>
                     <details>
                       <summary>View original evidence</summary>
                       {c.evidence.map((s) => (
@@ -846,29 +1408,67 @@ export default function App() {
                 ))}
                 {review.job.status === "review" && (
                   <div className="panel">
-                    <h2>Your resume checkpoint</h2>
-                    <p>
-                      Set the actual scene, time, inventory, and participants.
-                      The existing state is shown as a starting point; the
-                      parser does not infer these fields.
-                    </p>
-                    <label>
-                      State (JSON)
-                      <textarea
-                        className="state-editor"
-                        value={resumeState}
-                        onChange={(e) => setResumeState(e.target.value)}
-                      />
-                    </label>
-                    <button
-                      className="primary"
-                      disabled={busy}
-                      onClick={() => void approve()}
-                    >
-                      <Check size={16} /> Approve checkpoint & reviewed facts
-                    </button>
+                    <h2>Proposed story threads</h2>
+                    {!threadDecisions.length && (
+                      <p>
+                        No unresolved promises, deadlines, or goals were
+                        proposed.
+                      </p>
+                    )}
+                    {threadDecisions.map((thread, index) => (
+                      <label
+                        className="check-label"
+                        key={`${thread.title}-${index}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={thread.accept}
+                          onChange={(e) =>
+                            setThreadDecisions((old) =>
+                              old.map((item, i) =>
+                                i === index
+                                  ? { ...item, accept: e.target.checked }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                        <span>
+                          <strong>
+                            {thread.kind} · {thread.title}
+                          </strong>
+                          <small>{thread.details}</small>
+                        </span>
+                      </label>
+                    ))}
                   </div>
                 )}
+                {review.job.status === "review" &&
+                  review.job.proposedStateJson && (
+                    <div className="panel">
+                      <h2>Your resume checkpoint</h2>
+                      <p>
+                        Confirm the reconstructed scene, time, inventory,
+                        skills, and participants. You remain the final
+                        authority.
+                      </p>
+                      <label>
+                        State (JSON)
+                        <textarea
+                          className="state-editor"
+                          value={resumeState}
+                          onChange={(e) => setResumeState(e.target.value)}
+                        />
+                      </label>
+                      <button
+                        className="primary"
+                        disabled={busy}
+                        onClick={() => void approve()}
+                      >
+                        <Check size={16} /> Approve checkpoint & reviewed facts
+                      </button>
+                    </div>
+                  )}
               </>
             )}
           </section>
@@ -911,18 +1511,49 @@ export default function App() {
                 <div className="panel">
                   <h2>Task routing</h2>
                   {Object.entries(profiles.tasks).map(([task, profile]) => (
-                    <div className="state-row" key={task}>
-                      <span>{task}</span>
-                      <strong>{profile}</strong>
-                    </div>
+                    <label key={task}>
+                      {task}
+                      <select
+                        value={profile}
+                        onChange={(e) =>
+                          setProfiles({
+                            ...profiles,
+                            tasks: {
+                              ...profiles.tasks,
+                              [task]: e.target.value,
+                            },
+                          })
+                        }
+                      >
+                        {profiles.profiles.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                   ))}
                   <p>
                     Choose character and director profiles in each campaign's
                     Live world author settings. Separate character sessions use
                     the character profile, and the director coordinates
-                    narration and memory. AI transcript reconstruction remains
-                    deferred.
+                    narration and memory. Task routing below also configures
+                    narrator-only streaming and transcript reconstruction.
                   </p>
+                  <button
+                    disabled={busy}
+                    onClick={() =>
+                      void run(async () => {
+                        await api("/provider-routing", {
+                          method: "PUT",
+                          body: JSON.stringify(profiles.tasks),
+                        });
+                        setNotice("Provider routing saved.");
+                      })
+                    }
+                  >
+                    Save task routing
+                  </button>
                 </div>
                 {profiles.profiles.map((p) => (
                   <form
@@ -1019,7 +1650,23 @@ export default function App() {
                       />{" "}
                       Profile enabled
                     </label>
-                    <button disabled={busy}>Save profile</button>
+                    <div className="button-row">
+                      <button disabled={busy}>Save profile</button>
+                      <button
+                        type="button"
+                        disabled={busy || !p.enabled || !p.configured}
+                        onClick={() =>
+                          void run(async () => {
+                            const result = await post<{ response: string }>(
+                              `/providers/${p.id}/test`,
+                            );
+                            setNotice(`${p.name}: ${result.response}`);
+                          })
+                        }
+                      >
+                        Test connection
+                      </button>
+                    </div>
                   </form>
                 ))}
               </>

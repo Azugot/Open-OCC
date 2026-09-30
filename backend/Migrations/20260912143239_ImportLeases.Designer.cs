@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Story;
@@ -11,9 +12,11 @@ using Story;
 namespace Story.Api.Migrations
 {
     [DbContext(typeof(StoryDb))]
-    partial class StoryDbModelSnapshot : ModelSnapshot
+    [Migration("20260912143239_ImportLeases")]
+    partial class ImportLeases
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -181,10 +184,6 @@ namespace Story.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<string>("WorldJson")
-                        .IsRequired()
-                        .HasColumnType("text");
-
                     b.HasKey("Id");
 
                     b.HasIndex("BranchId", "Sequence")
@@ -320,10 +319,6 @@ namespace Story.Api.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("DraftJson")
-                        .IsRequired()
-                        .HasColumnType("text");
-
                     b.Property<string>("Error")
                         .HasColumnType("text");
 
@@ -348,7 +343,6 @@ namespace Story.Api.Migrations
                         .HasColumnType("text");
 
                     b.Property<string>("Status")
-                        .IsConcurrencyToken()
                         .IsRequired()
                         .HasColumnType("text");
 
@@ -357,42 +351,6 @@ namespace Story.Api.Migrations
                     b.HasIndex("BranchId");
 
                     b.ToTable("GenerationRuns");
-                });
-
-            modelBuilder.Entity("Story.ImportIssue", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<bool>("Blocking")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("Code")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("EvidenceJson")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<Guid>("JobId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Resolution")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Text")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("JobId", "Code")
-                        .IsUnique();
-
-                    b.ToTable("ImportIssues");
                 });
 
             modelBuilder.Entity("Story.ImportJob", b =>
@@ -407,9 +365,6 @@ namespace Story.Api.Migrations
                     b.Property<Guid>("BranchId")
                         .HasColumnType("uuid");
 
-                    b.Property<int>("Calls")
-                        .HasColumnType("integer");
-
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -419,21 +374,14 @@ namespace Story.Api.Migrations
                     b.Property<Guid>("ExpectedCheckpointId")
                         .HasColumnType("uuid");
 
-                    b.Property<int>("InputCharacterLimit")
-                        .HasColumnType("integer");
-
                     b.Property<int?>("InputTokens")
                         .HasColumnType("integer");
 
                     b.Property<string>("LeaseOwner")
-                        .IsConcurrencyToken()
                         .HasColumnType("text");
 
                     b.Property<DateTime?>("LeaseUntil")
                         .HasColumnType("timestamp with time zone");
-
-                    b.Property<int>("MaxCalls")
-                        .HasColumnType("integer");
 
                     b.Property<string>("Method")
                         .IsRequired()
@@ -443,17 +391,10 @@ namespace Story.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<int>("OutputTokenLimit")
-                        .HasColumnType("integer");
-
                     b.Property<int?>("OutputTokens")
                         .HasColumnType("integer");
 
                     b.Property<int>("Processed")
-                        .HasColumnType("integer");
-
-                    b.Property<int>("ProposalRevision")
-                        .IsConcurrencyToken()
                         .HasColumnType("integer");
 
                     b.Property<string>("ProposedStateJson")
@@ -467,21 +408,8 @@ namespace Story.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<string>("ResumeJson")
-                        .HasColumnType("text");
-
-                    b.Property<bool>("ReviewCompleted")
-                        .HasColumnType("boolean");
-
                     b.Property<Guid>("SourceId")
                         .HasColumnType("uuid");
-
-                    b.Property<string>("Stage")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<int>("StageCursor")
-                        .HasColumnType("integer");
 
                     b.Property<string>("Status")
                         .IsConcurrencyToken()
@@ -503,88 +431,17 @@ namespace Story.Api.Migrations
                     b.ToTable("ImportJobs");
                 });
 
-            modelBuilder.Entity("Story.ImportProposal", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Category")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("ContentJson")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<bool>("Current")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("Excluded")
-                        .HasColumnType("boolean");
-
-                    b.Property<Guid>("JobId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Key")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<int>("Revision")
-                        .HasColumnType("integer");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("JobId", "Key", "Revision")
-                        .IsUnique();
-
-                    b.ToTable("ImportProposals");
-                });
-
-            modelBuilder.Entity("Story.ImportSection", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<int>("End")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid>("JobId")
-                        .HasColumnType("uuid");
-
-                    b.Property<int>("Ordinal")
-                        .HasColumnType("integer");
-
-                    b.Property<int>("Start")
-                        .HasColumnType("integer");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("JobId", "Ordinal")
-                        .IsUnique();
-
-                    b.ToTable("ImportSections");
-                });
-
             modelBuilder.Entity("Story.ImportSegment", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
-                    b.Property<bool>("Artifact")
-                        .HasColumnType("boolean");
-
                     b.Property<Guid>("JobId")
                         .HasColumnType("uuid");
 
                     b.Property<int>("Ordinal")
                         .HasColumnType("integer");
-
-                    b.Property<string>("Section")
-                        .IsRequired()
-                        .HasColumnType("text");
 
                     b.Property<string>("Speaker")
                         .IsRequired()
@@ -594,57 +451,12 @@ namespace Story.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<string>("Timestamp")
-                        .HasColumnType("text");
-
                     b.HasKey("Id");
 
                     b.HasIndex("JobId", "Ordinal")
                         .IsUnique();
 
                     b.ToTable("Segments");
-                });
-
-            modelBuilder.Entity("Story.ImportStageResult", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<int?>("InputTokens")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid>("JobId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Model")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<int>("Ordinal")
-                        .HasColumnType("integer");
-
-                    b.Property<int?>("OutputTokens")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("Provider")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("ResultJson")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Stage")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("JobId", "Stage", "Ordinal")
-                        .IsUnique();
-
-                    b.ToTable("ImportResults");
                 });
 
             modelBuilder.Entity("Story.ImportedSource", b =>
@@ -1093,15 +905,6 @@ namespace Story.Api.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("Story.ImportIssue", b =>
-                {
-                    b.HasOne("Story.ImportJob", null)
-                        .WithMany()
-                        .HasForeignKey("JobId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-                });
-
             modelBuilder.Entity("Story.ImportJob", b =>
                 {
                     b.HasOne("Story.Branch", null)
@@ -1117,34 +920,7 @@ namespace Story.Api.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("Story.ImportProposal", b =>
-                {
-                    b.HasOne("Story.ImportJob", null)
-                        .WithMany()
-                        .HasForeignKey("JobId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("Story.ImportSection", b =>
-                {
-                    b.HasOne("Story.ImportJob", null)
-                        .WithMany()
-                        .HasForeignKey("JobId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-                });
-
             modelBuilder.Entity("Story.ImportSegment", b =>
-                {
-                    b.HasOne("Story.ImportJob", null)
-                        .WithMany()
-                        .HasForeignKey("JobId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("Story.ImportStageResult", b =>
                 {
                     b.HasOne("Story.ImportJob", null)
                         .WithMany()

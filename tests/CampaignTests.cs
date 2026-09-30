@@ -1,4 +1,5 @@
 using System.Text;
+using System.IO.Compression;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Story;
@@ -104,7 +105,10 @@ public class CampaignTests : IAsyncLifetime
     public async Task CancelledProviderDoesNotProduceNarration()
     {
         using var cancel = new CancellationTokenSource(); cancel.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new FixtureProvider().Narrate(new("Wait", StoryState.Synthetic, []), cancel.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (var _ in new FixtureProvider().Stream(new("Narrate", "PLAYER ACTION:\nWait"), cancel.Token)) { }
+        });
     }
 
     [Fact]
@@ -152,12 +156,13 @@ public class CampaignTests : IAsyncLifetime
     }
 
     [Theory]
-    [InlineData("openai")][InlineData("anthropic")][InlineData("openai-compatible")][InlineData("ollama")]
-    public async Task StubsFailExplicitlyWithoutFallback(string adapter)
+    [InlineData("openai")][InlineData("anthropic")][InlineData("openai-compatible")][InlineData("lemonade")][InlineData("ollama")]
+    public void LiveAdaptersAdvertiseStreamingAndStructuredOutput(string adapter)
     {
-        var provider = ProviderRegistry.Resolve(adapter);
-        Assert.False(provider.Capabilities.Available);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => provider.Narrate(new("Continue", StoryState.Synthetic, []), default));
+        var capabilities = ProviderFactory.Capabilities(adapter);
+        Assert.True(capabilities.Available);
+        Assert.True(capabilities.Streaming);
+        Assert.True(capabilities.StructuredOutput || adapter == "lemonade");
     }
 
     [Fact]
@@ -167,4 +172,75 @@ public class CampaignTests : IAsyncLifetime
         Assert.Equal(new[] { "user", "assistant" }, entries.Select(x => x.Speaker));
         Assert.Throws<InvalidOperationException>(() => ImportParser.Parse("story.json", Encoding.UTF8.GetBytes("{}")));
     }
+
+    [Fact]
+    public void ImportParserSupportsHtmlMarkdownAndDocx()
+    {
+        var html = ImportParser.Parse("story.html", Encoding.UTF8.GetBytes("<html><script>ignore()</script><p>Hello</p><p>World</p></html>"));
+        Assert.Equal(new[] { "Hello", "World" }, html.Select(x => x.Text));
+        var markdown = ImportParser.Parse("story.md", Encoding.UTF8.GetBytes("First\n\nSecond"));
+        Assert.Equal(2, markdown.Count);
+        using var docx = new MemoryStream();
+        using (var zip = new ZipArchive(docx, ZipArchiveMode.Create, true))
+        {
+            var entry = zip.CreateEntry("word/document.xml");
+            using var writer = new StreamWriter(entry.Open());
+            writer.Write("<document xmlns='http://schemas.openxmlformats.org/wordprocessingml/2006/main'><body><p><t>Paragraph one</t></p><p><t>Paragraph two</t></p></body></document>");
+        }
+        var word = ImportParser.Parse("story.docx", docx.ToArray());
+        Assert.Equal(new[] { "Paragraph one", "Paragraph two" }, word.Select(x => x.Text));
+    }
+
+    [Fact]
+    public async Task CorrectionCreatesAuditableCheckpoint()
+    {
+        await using var db = Db();
+        var branch = await CampaignService.Create(db, new("Correction world"), default);
+        var fact = new Fact { BranchId = branch.Id, EffectiveSequence = 0, Text = "The gate is open", ReviewStatus = "accepted", Visibility = "public" };
+        db.Facts.Add(fact); await db.SaveChangesAsync();
+        var originalHead = branch.HeadCheckpointId;
+        await CampaignService.CorrectFact(db, branch.Id, fact.Id, new(originalHead, "The gate is closed", "The imported transcript clarified this."), default);
+        Assert.Equal("The gate is closed", fact.Text);
+        Assert.Equal("user-confirmed", fact.Provenance);
+        Assert.Single(await db.FactCorrections.ToListAsync());
+        Assert.Equal("Canon correction", (await db.Checkpoints.SingleAsync(x => x.Id == branch.HeadCheckpointId)).Label);
+    }
+
+    [Fact]
+    public async Task RetrievalFindsHistoricalMessagesAndPortableRoundTripCreatesNewIds()
+    {
+        await using var db = Db();
+        var branch = await CampaignService.Create(db, new("Portable world"), default);
+        var run = new GenerationRun { BranchId = branch.Id, ExpectedCheckpointId = branch.HeadCheckpointId, Action = "Remember the silver key" };
+        db.Add(run); await db.SaveChangesAsync(); await CampaignService.CommitTurn(db, run, "The silver key rests beneath the archive.", default);
+        var hits = await RetrievalService.Search(db, branch.Id, "silver key", default);
+        Assert.Contains(hits, x => x.Type == "message");
+        var exported = await PortabilityService.Export(db, branch.CampaignId, default);
+        var imported = await PortabilityService.Import(db, exported, "Portable copy", default);
+        Assert.NotEqual(branch.CampaignId, imported.CampaignId);
+        Assert.NotEqual(branch.Id, imported.Id);
+        Assert.Equal(3, await db.Messages.CountAsync(x => x.BranchId == imported.Id));
+    }
+
+    [Fact]
+    public async Task WorldVersionsCharactersKnowledgeAndMechanicsAreDeterministic()
+    {
+        await using var db = Db();
+        var world = await WorldService.Create(db, new("The Shattered Coast", "A saltwater frontier."), default);
+        var version = await WorldService.CreateVersion(db, world.Id, new("{\"magic\":\"tide\"}", "[\"Harbor\"]", "[]", "Keep the sea routes coherent."), default);
+        var branch = await CampaignService.Create(db, new("Coast campaign", false, version.Id), default);
+        var character = new Character { CampaignId = branch.CampaignId, Name = "Mara", Description = "A navigator" };
+        db.Characters.Add(character); await db.SaveChangesAsync();
+        var checkpoint = await MechanicsService.Apply(db, branch.Id, new(branch.HeadCheckpointId, "inventory", "Rations", 3, "Prepared for the crossing."), default);
+        Assert.Equal(3, Json.Read<StoryState>(checkpoint.StateJson).Inventory["Rations"]);
+        await MechanicsService.Apply(db, branch.Id, new(checkpoint.Id, "skill", "Navigation", 2, "Read the tide charts."), default);
+        Assert.Equal(2, await db.Mechanics.CountAsync(x => x.BranchId == branch.Id));
+        Assert.Equal(2, await db.Events.CountAsync(x => x.BranchId == branch.Id));
+        Assert.Equal(version.Id, (await db.Campaigns.SingleAsync()).WorldVersionId);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("<script>alert(1)</script>")]
+    public void NarrativeValidationRejectsUnsafeOrEmptyOutput(string narrative) => Assert.Throws<InvalidOperationException>(() => ContinuityService.ValidateNarrative(narrative));
 }

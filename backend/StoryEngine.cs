@@ -51,7 +51,7 @@ public static class StoryEngine
         Text(a.Text, 2000); Text(a.Explanation, 2000);
     }
 
-    public static object CharacterContext(StoryWorld w, string actorId, string[] publicFacts)
+    public static object CharacterContext(StoryWorld w, string actorId, string[] publicFacts, string[]? privateKnowledge = null)
     {
         var actor = w.Entities.Single(x => x.Id == actorId);
         var events = w.Events.Where(x => x.PerceivedBy.Contains(actorId)).TakeLast(24).ToArray();
@@ -60,8 +60,16 @@ public static class StoryEngine
             .Select(x => x.LocationId == actor.LocationId || x.Id == actor.LocationId ? x : x with { LocationId = "", Description = "Previously encountered; current whereabouts unknown." }).ToArray();
         return new { actor, character = w.Characters.Single(x => x.EntityId == actorId), entities = scene, recentEvents = events,
             memories = RetrieveMemories(w, actorId, string.Join(" ", events.TakeLast(3).Select(x => x.Text))),
-            commonFacts = publicFacts.Take(20).Select(x => x[..Math.Min(x.Length, 1000)]), timeMinutes = w.TimeMinutes };
+            commonFacts = publicFacts.Take(20).Select(x => x[..Math.Min(x.Length, 1000)]),
+            privateKnowledge = (privateKnowledge ?? []).Take(20).Select(x => x[..Math.Min(x.Length, 1000)]), timeMinutes = w.TimeMinutes };
     }
+
+    public static string[] PerceivedFacts(IEnumerable<Fact> facts, string actorName) => facts.Where(f =>
+    {
+        var owners = Json.Read<string[]>(f.KnownByJson);
+        return owners.Contains(actorName, StringComparer.OrdinalIgnoreCase) ||
+            (owners.Length == 0 && f.Visibility == "public" && f.Kind is not ("secret" or "belief"));
+    }).Select(f => $"[{f.Kind}; confidence {f.Confidence}] {f.Text}").ToArray();
 
     public static MemoryEntry[] RetrieveMemories(StoryWorld w, string owner, string query)
     {
@@ -74,12 +82,12 @@ public static class StoryEngine
         return chosen.Where(x => { budget -= x.Text.Length; return budget >= 0; }).ToArray();
     }
 
-    private static object DirectorContext(StoryWorld w, string[] facts, StoryState? playerState = null) => new
+    private static object DirectorContext(StoryWorld w, string[] facts, StoryState? playerState = null, object? canon = null) => new
     {
         entities = w.Entities.Take(80).Select(x => x with { Description = x.Description[..Math.Min(x.Description.Length, 300)] }),
         characters = w.Characters.Take(30), w.PlayerLocationId, w.TimeMinutes, playerState,
         recentEvents = w.Events.TakeLast(24), memories = RetrieveMemories(w, "director", string.Join(" ", w.Events.TakeLast(5).Select(x => x.Text))),
-        precedents = w.Checks.TakeLast(12), facts = facts.Take(40).Select(x => x[..Math.Min(x.Length, 1000)])
+        precedents = w.Checks.TakeLast(12), facts = facts.Take(40).Select(x => x[..Math.Min(x.Length, 1000)]), canon
     };
 
     public static async Task Execute(StoryDb db, GenerationRun run, IConfiguration config, CancellationToken ct,
@@ -102,14 +110,21 @@ public static class StoryEngine
             await Save();
             var character = characterOverride ?? await Provider(w.Settings.CharacterProfile);
             var director = directorOverride ?? await Provider(w.Settings.DirectorProfile);
-            var facts = await db.Facts.Where(x => x.BranchId == run.BranchId && x.ReviewStatus == "accepted").ToListAsync(ct);
-            var publicFacts = facts.Where(x => x.Visibility == "public").Select(x => x.Text).ToArray();
-            var allFacts = facts.Select(x => x.Text).ToArray();
+            var facts = await db.Facts.Where(x => x.BranchId == run.BranchId && x.ReviewStatus == "accepted" && x.EffectiveSequence <= cp.Sequence)
+                .OrderByDescending(x => x.EffectiveSequence).ToListAsync(ct);
+            var allFacts = facts.Select(x => $"[{x.Kind}; confidence {x.Confidence}; known by {x.KnownByJson}] {x.Text}").ToArray();
+            var campaign = await db.Campaigns.SingleAsync(x => x.Id == branch.CampaignId, ct);
+            var version = campaign.WorldVersionId is { } versionId ? await db.WorldVersions.SingleAsync(x => x.Id == versionId, ct) : null;
+            var people = await db.Characters.Where(x => x.CampaignId == branch.CampaignId).ToListAsync(ct);
+            var knowledge = await db.Knowledge.Where(x => x.BranchId == branch.Id && x.EffectiveSequence <= cp.Sequence).ToListAsync(ct);
+            var threads = await db.NarrativeThreads.Where(x => x.BranchId == branch.Id && x.EffectiveSequence <= cp.Sequence && x.Status == "active")
+                .OrderByDescending(x => x.Importance).Take(20).Select(x => new ContextThread(x.Title, x.Details, x.Kind, x.Importance)).ToArrayAsync(ct);
+            var canon = new { worldVersion = version, activeThreads = threads };
 
             var advance = System.Text.RegularExpressions.Regex.IsMatch(run.Action, "\\b(wait|rest|sleep|advance)\\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase) ? 10 : 0;
             var selected = w.Characters.Where(c => advance > 0 || w.Entities.Single(e => e.Id == c.EntityId).LocationId == w.PlayerLocationId).Take(w.Settings.MaxNpcs).Select(x => x.EntityId).ToArray();
             var uncertain = System.Text.RegularExpressions.Regex.IsMatch(run.Action, "\\b(force|attack|persuade|convince|break|sneak)\\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            var plan = await Step("plan", "plan", director, new { action = run.Action, world = DirectorContext(w, allFacts, draft.State), limits = w.Settings },
+            var plan = await Step("plan", "plan", director, new { action = run.Action, world = DirectorContext(w, allFacts, draft.State, canon), limits = w.Settings },
                 new TurnPlan(selected, advance, new(run.Action, uncertain, 14, [], uncertain ? "A contested attempt against academy precautions." : "An ordinary action needs no roll.")),
                 p => {
                     if (p.ActorIds is null || p.ActorIds.Length > w.Settings.MaxNpcs || p.ActorIds.Distinct().Count() != p.ActorIds.Length || p.AdvanceMinutes is < 0 or > 1440 ||
@@ -120,7 +135,7 @@ public static class StoryEngine
             if (draft.Applied.Add("clock")) { w.TimeMinutes += plan.AdvanceMinutes; await Save(); }
             var playerCheck = await Check("player-check", "player", plan.PlayerAttempt);
             var playerResult = await Step("player-result", "resolve", director,
-                new { actorId = "player", action = run.Action, attempt = plan.PlayerAttempt, check = playerCheck, world = DirectorContext(w, allFacts, draft.State) },
+                new { actorId = "player", action = run.Action, attempt = plan.PlayerAttempt, check = playerCheck, world = DirectorContext(w, allFacts, draft.State, canon) },
                 new Resolution($"You attempt: {run.Action}" + (playerCheck is null ? "" : playerCheck.Success ? " The attempt succeeds." : " The attempt fails."),
                     "scene", [], [], null, [], [], [], false), r => { ValidateResolution(w, "player", r); ValidateEffects(r, playerCheck); });
             if (draft.Applied.Add("player-result")) { Apply(w, "player", 0, playerResult, playerCheck); await Save(); }
@@ -144,14 +159,16 @@ public static class StoryEngine
                     if (offscreen && (plan.AdvanceMinutes == 0 || beat > 1)) continue;
                     if (!offscreen && entity.LocationId != w.PlayerLocationId) continue;
                     var current = w.Characters.Single(x => x.EntityId == actorId);
-                    var proposal = await Step(key + "-proposal", "character", character, CharacterContext(w, actorId, publicFacts),
+                    var person = people.SingleOrDefault(x => x.Name.Equals(entity.Name, StringComparison.OrdinalIgnoreCase));
+                    var ownKnowledge = knowledge.Where(x => x.CharacterId == person?.Id).Select(x => $"[{x.BeliefType}; confidence {x.Confidence}] {x.Subject}").ToArray();
+                    var proposal = await Step(key + "-proposal", "character", character, CharacterContext(w, actorId, PerceivedFacts(facts, entity.Name), ownKnowledge),
                         new CharacterProposal(entity.Kind == "being" ? "" : actorId == "clerk" ? "Please present your application." : actorId == "guard" ? "The sealed wing requires permission." : "What would you like to do next?",
                             current.Intention, "scene", [], current.Goal, current.Belief, current.Emotion, current.Intention,
                             "Respond to the observed situation while pursuing my goal."), p => ValidateProposal(w, actorId, p));
-                    var attempt = await Step(key + "-attempt", "assess", director, new { actorId, proposal, world = DirectorContext(w, allFacts, draft.State) },
+                    var attempt = await Step(key + "-attempt", "assess", director, new { actorId, proposal, world = DirectorContext(w, allFacts, draft.State, canon) },
                         new Attempt(proposal.Action, false, 10, [], "Routine behavior in the current scene."), ValidateAttempt);
                     var check = await Check(key + "-check", actorId, attempt);
-                    var result = await Step(key + "-result", "resolve", director, new { actorId, proposal, attempt, check, world = DirectorContext(w, allFacts, draft.State) },
+                    var result = await Step(key + "-result", "resolve", director, new { actorId, proposal, attempt, check, world = DirectorContext(w, allFacts, draft.State, canon) },
                         new Resolution($"{entity.Name}: {proposal.Action}." + (string.IsNullOrEmpty(proposal.Speech) ? "" : $" “{proposal.Speech}”"),
                             proposal.Visibility, proposal.Recipients, [entity.Id, entity.LocationId], null, [], [],
                             [new("long", "belief", proposal.Belief)], entity.LocationId == w.PlayerLocationId && beat == 1 && actorId == plan.ActorIds.LastOrDefault(id => w.Entities.Single(x => x.Id == id).LocationId == w.PlayerLocationId)),
