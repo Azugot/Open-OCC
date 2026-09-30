@@ -367,19 +367,25 @@ public static class Reconstruction
     }
     public static void ValidateClaim(ImportClaim c, HashSet<int> allowed, HashSet<string> keys)
     {
-        if (c is not null && c.Category is not null && !Categories.Contains(c.Category))
+        if (c is null) throw new InvalidOperationException("A claim must be an object, not null.");
+        if (c.Category is null || !Categories.Contains(c.Category))
             throw new InvalidOperationException("Claim category must be one of: " + string.Join(", ", Categories) + ".");
-        if (c?.EvidenceOrdinals is { } citations && citations.Any(x => !allowed.Contains(x)))
+        if (c.EvidenceOrdinals is { } citations && citations.Any(x => !allowed.Contains(x)))
             throw new InvalidOperationException("A claim cites a passage not supplied in this stage. Use only supplied ordinal IDs.");
-        if (c?.Key is { } key && c.Category is { } category && !key.StartsWith(category + ":"))
-            throw new InvalidOperationException("Claim keys must start with their category followed by a colon.");
-        if (c is null || c.Key is null || c.Category is null || !Categories.Contains(c.Category) || !c.Key.StartsWith(c.Category + ":") || c.Key.Length > 120 ||
-            string.IsNullOrWhiteSpace(c.Text) || c.Text.Length > 1000 || c.Subject is null || c.Subject.Length > 100 || c.Target is null || c.Target.Length > 120 || c.Value is null || c.Value.Length > 1000 ||
-            c.Kind is not ("fact" or "rumor" or "belief" or "secret" or "correction") || c.Visibility is not ("public" or "narrator") || c.Kind == "secret" && c.Visibility != "narrator" ||
-            !double.IsFinite(c.Confidence) || c.Confidence is < 0 or > 1 || c.KnownBy is null || c.KnownBy.Length > 30 || c.KnownBy.Any(x => string.IsNullOrWhiteSpace(x) || x.Length > 100) ||
-            c.Disposition is not ("current" or "historical") || c.EvidenceOrdinals is null || c.EvidenceOrdinals.Length is 0 or > 64 || c.EvidenceOrdinals.Any(x => !allowed.Contains(x)) ||
-            c.SupersedesKeys is null || c.SupersedesKeys.Length > 16 || c.SupersedesKeys.Any(x => !keys.Contains(x)))
-            throw new InvalidOperationException("Invalid claim or unsupported evidence reference.");
+        if (c.Key is null || !c.Key.StartsWith(c.Category + ":") || c.Key.Length > 120)
+            throw new InvalidOperationException("Claim key must start with its category followed by a colon and contain at most 120 characters.");
+        if (string.IsNullOrWhiteSpace(c.Text) || c.Text.Length > 1000) throw new InvalidOperationException("Claim text must be nonempty and at most 1,000 characters. Consolidate the supported details concisely.");
+        if (c.Subject is null || c.Subject.Length > 100) throw new InvalidOperationException("Claim subject must be a string of at most 100 characters.");
+        if (c.Target is null || c.Target.Length > 120) throw new InvalidOperationException("Claim target must be a string of at most 120 characters.");
+        if (c.Value is null || c.Value.Length > 1000) throw new InvalidOperationException("Claim value must be a string of at most 1,000 characters.");
+        if (c.Kind is not ("fact" or "rumor" or "belief" or "secret" or "correction")) throw new InvalidOperationException("Claim kind must be exactly fact, rumor, belief, secret, or correction.");
+        if (c.Visibility is not ("public" or "narrator")) throw new InvalidOperationException("Claim visibility must be exactly public or narrator.");
+        if (c.Kind == "secret" && c.Visibility != "narrator") throw new InvalidOperationException("A secret claim must have narrator visibility.");
+        if (!double.IsFinite(c.Confidence) || c.Confidence is < 0 or > 1) throw new InvalidOperationException("Claim confidence must be a finite number from 0 through 1.");
+        if (c.KnownBy is null || c.KnownBy.Length > 30 || c.KnownBy.Any(x => string.IsNullOrWhiteSpace(x) || x.Length > 100)) throw new InvalidOperationException("Claim knownBy must contain at most 30 nonempty names, each at most 100 characters. Use an empty array when nobody is known to know it.");
+        if (c.Disposition is not ("current" or "historical")) throw new InvalidOperationException("Claim disposition must be exactly current or historical.");
+        if (c.EvidenceOrdinals is null || c.EvidenceOrdinals.Length is 0 or > 64) throw new InvalidOperationException("Claim evidenceOrdinals must contain 1 through 64 supplied passage IDs.");
+        if (c.SupersedesKeys is null || c.SupersedesKeys.Length > 16 || c.SupersedesKeys.Any(x => !keys.Contains(x))) throw new InvalidOperationException("Claim supersedesKeys must contain at most 16 existing ledger keys. Use an empty array unless explicitly correcting or consolidating an existing claim.");
         if (c.Category is "character" or "relationship" or "knowledge" or "inventory" or "skill" or "thread" && string.IsNullOrWhiteSpace(c.Subject)) throw new InvalidOperationException("This entity requires a subject.");
         if (c.Category == "relationship" && (string.IsNullOrWhiteSpace(c.Target) || string.IsNullOrWhiteSpace(c.Value) || c.Amount is < -100 or > 100)) throw new InvalidOperationException("Invalid relationship.");
         if (c.Category == "inventory" && c.Amount is < 0 or > 1000000) throw new InvalidOperationException("Invalid inventory quantity.");
@@ -418,12 +424,16 @@ public static class Reconstruction
         foreach (var (name, values) in new[] { ("category", Categories), ("kind", new[] { "fact", "rumor", "belief", "secret", "correction" }),
             ("visibility", new[] { "public", "narrator" }), ("disposition", new[] { "current", "historical" }) })
             props[name]!["enum"] = new JsonArray(values.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray());
+        foreach (var (name, max) in new[] { ("key", 120), ("text", 1000), ("subject", 100), ("target", 120), ("value", 1000) })
+            props[name]!["maxLength"] = max;
+        props["text"]!["minLength"] = 1;
         props["amount"] = new JsonObject { ["type"] = "integer" };
         props["amount"]!["description"] = "For thread: importance 1 through 5, never 0. Inventory: absolute count. Relationship: score -100 through 100. Other categories: 0.";
         props["target"]!["description"] = "For thread: exactly active or resolved. Relationship: other character's name. Knowledge: related fact key, or empty. Other categories: empty.";
         props["value"]!["description"] = "For thread: exactly goal, promise, deadline, mystery, conflict, or thread. Skill: rank. Relationship: label. Character: goals. World: name. Other categories: empty.";
         props["confidence"] = new JsonObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 1 };
-        foreach (var name in new[] { "knownBy", "supersedesKeys" }) props[name] = JsonNode.Parse("""{"type":"array","items":{"type":"string"}}""");
+        props["knownBy"] = JsonNode.Parse("""{"type":"array","maxItems":30,"items":{"type":"string","minLength":1,"maxLength":100}}""");
+        props["supersedesKeys"] = JsonNode.Parse("""{"type":"array","maxItems":16,"items":{"type":"string"}}""");
         props["evidenceOrdinals"] = JsonNode.Parse("""{"type":"array","minItems":1,"maxItems":64,"items":{"type":"integer","minimum":0}}""");
         claim["required"] = new JsonArray(props.Select(x => JsonValue.Create(x.Key)).ToArray<JsonNode?>());
         var issue = JsonNode.Parse("""{"type":"object","additionalProperties":false,"properties":{"code":{"type":"string"},"text":{"type":"string"},"blocking":{"type":"boolean"},"evidenceOrdinals":{"type":"array","items":{"type":"integer"}}},"required":["code","text","blocking","evidenceOrdinals"]}""")!;
