@@ -37,6 +37,7 @@ public static class Reconstruction
         "Evidence ordinal numbers are zero-based citation IDs, not independent scenes. Read adjacent passages as continuous text, respecting speaker/heading changes. " +
         "Return one JSON object matching the schema. At most 16 claims per response; preserve material information through concise consolidation. " +
         "Use only the enum values in the schema. Never put prose in amount or confidence. Include every required field. " +
+        "Each key may occur only once in a response. Consolidate supported details for the same entity/key into one claim; do not emit separate updates with the same key. " +
         "Example shape (replace the example with supported claims and supplied ordinals): " +
         "{\"claims\":[{\"key\":\"character:mara\",\"category\":\"character\",\"text\":\"Mara is a navigator.\",\"subject\":\"Mara\",\"target\":\"\",\"value\":\"\",\"amount\":0,\"kind\":\"fact\",\"visibility\":\"public\",\"knownBy\":[],\"confidence\":0.9,\"evidenceOrdinals\":[0],\"disposition\":\"current\",\"supersedesKeys\":[]}],\"issues\":[],\"resume\":null,\"summary\":\"Mara prepares to sail.\",\"resolvedIssueCodes\":[]}";
 
@@ -394,7 +395,8 @@ public static class Reconstruction
     {
         if (result is null || result.Claims is null || result.Claims.Length > 16 || result.Issues is null || result.Issues.Length > 16 || result.Summary is null || result.Summary.Length > 4000 || result.ResolvedIssueCodes is null || result.ResolvedIssueCodes.Length > 16 || result.ResolvedIssueCodes.Any(x => string.IsNullOrWhiteSpace(x) || x.Length > 200)) throw new InvalidOperationException("Incomplete reconstruction result.");
         if (result.Claims.Any(x => x is null)) throw new InvalidOperationException("A claim was null.");
-        if (result.Claims.Select(x => x.Key).Distinct().Count() != result.Claims.Length) throw new InvalidOperationException("Repeated keys in one result.");
+        var repeated = result.Claims.GroupBy(x => x.Key).Where(x => x.Count() > 1).Select(x => x.Key).Take(4).ToArray();
+        if (repeated.Length > 0) throw new InvalidOperationException("Each claim key may occur only once. Consolidate the supported details for these duplicate keys into one claim per key: " + Json.Write(repeated));
         if (result.Claims.Any(x => x.SupersedesKeys?.Any(k => result.Claims.Any(other => other.Key == k && other.Key != x.Key)) == true)) throw new InvalidOperationException("A result cannot both supersede and retain a claim.");
         foreach (var claim in result.Claims) ValidateClaim(claim, allowed, keys);
         foreach (var issue in result.Issues)
