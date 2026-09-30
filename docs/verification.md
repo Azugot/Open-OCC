@@ -96,7 +96,7 @@ The separate restore-check project can likewise be stopped with `-p open-occ-res
 
 ## Scope limits
 
-Story deletion and the connected import reader are covered by 125 backend tests, including transaction rollback/isolation, active-work conflicts, growing context budgets, complete citation paging, literal-newline JSON repair, and portable review plans. The frontend production build and confirmation modal's focus trap, Escape cancellation, and focus restoration were checked.
+Story deletion and the connected import reader are covered by 128 backend tests, including transaction rollback/isolation, active-work conflicts, growing context budgets, complete citation paging, literal-newline JSON repair, thread-field feedback, and portable review plans. The frontend production build and confirmation modal's focus trap, Escape cancellation, and focus restoration were checked.
 
 `node tests/import-deletion-smoke.mjs http://127.0.0.1:5080` runs only against a disposable PostgreSQL backend with `LEMONADE_BASE_URL=http://127.0.0.1:11450/v1`. It supplies scripted HTTP responses and checks per-import model selection, original DOCX bytes, full processing/approval and complete deletion without affecting another story. It does not test model interpretation of the source or make paid requests.
 

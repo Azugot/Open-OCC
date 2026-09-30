@@ -32,7 +32,7 @@ public static class Reconstruction
         "Character: subject=name, text=description, value=goals. Relationship: subject=from name, target=to name, value=label, amount=score. " +
         "Knowledge: subject=character name, text=belief, target=related fact key or empty. World: subject=rule/location/faction, value=name. " +
         "Inventory: subject=item, amount=absolute current count. Skill: subject=ability, value=current rank/progress. " +
-        "Thread: subject=title, value=goal/promise/deadline/mystery/conflict/thread, target=active/resolved, amount=importance 1..5. " +
+        "Thread: subject=title, value must be exactly goal/promise/deadline/mystery/conflict/thread, target must be exactly active/resolved, amount must be importance 1..5 (never zero). " +
         "Use empty strings/arrays and amount=0 for irrelevant fields. Resume is the complete scene state or null if not recoverable; list gaps explicitly. " +
         "Evidence ordinal numbers are zero-based citation IDs, not independent scenes. Read adjacent passages as continuous text, respecting speaker/heading changes. " +
         "Return one JSON object matching the schema. At most 16 claims per response; preserve material information through concise consolidation. " +
@@ -383,7 +383,12 @@ public static class Reconstruction
         if (c.Category == "relationship" && (string.IsNullOrWhiteSpace(c.Target) || string.IsNullOrWhiteSpace(c.Value) || c.Amount is < -100 or > 100)) throw new InvalidOperationException("Invalid relationship.");
         if (c.Category == "inventory" && c.Amount is < 0 or > 1000000) throw new InvalidOperationException("Invalid inventory quantity.");
         if (c.Category == "skill" && c.Value.Length is 0 or > 100) throw new InvalidOperationException("Invalid skill value.");
-        if (c.Category == "thread" && (c.Subject.Length > 200 || c.Amount is < 1 or > 5 || c.Target is not ("active" or "resolved") || c.Value is not ("goal" or "promise" or "deadline" or "mystery" or "conflict" or "thread"))) throw new InvalidOperationException("Invalid thread.");
+        if (c.Category == "thread")
+        {
+            if (c.Amount is < 1 or > 5) throw new InvalidOperationException("Thread importance (amount) must be an integer from 1 to 5; zero is not valid.");
+            if (c.Target is not ("active" or "resolved")) throw new InvalidOperationException("Thread status (target) must be exactly active or resolved, not an entity name or an empty string.");
+            if (c.Value is not ("goal" or "promise" or "deadline" or "mystery" or "conflict" or "thread")) throw new InvalidOperationException("Thread kind (value) must be exactly goal, promise, deadline, mystery, conflict, or thread.");
+        }
     }
     private static void ValidateResult(AgentResult result, HashSet<int> allowed, HashSet<string> keys)
     {
@@ -412,6 +417,9 @@ public static class Reconstruction
             ("visibility", new[] { "public", "narrator" }), ("disposition", new[] { "current", "historical" }) })
             props[name]!["enum"] = new JsonArray(values.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray());
         props["amount"] = new JsonObject { ["type"] = "integer" };
+        props["amount"]!["description"] = "For thread: importance 1 through 5, never 0. Inventory: absolute count. Relationship: score -100 through 100. Other categories: 0.";
+        props["target"]!["description"] = "For thread: exactly active or resolved. Relationship: other character's name. Knowledge: related fact key, or empty. Other categories: empty.";
+        props["value"]!["description"] = "For thread: exactly goal, promise, deadline, mystery, conflict, or thread. Skill: rank. Relationship: label. Character: goals. World: name. Other categories: empty.";
         props["confidence"] = new JsonObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 1 };
         foreach (var name in new[] { "knownBy", "supersedesKeys" }) props[name] = JsonNode.Parse("""{"type":"array","items":{"type":"string"}}""");
         props["evidenceOrdinals"] = JsonNode.Parse("""{"type":"array","minItems":1,"maxItems":64,"items":{"type":"integer","minimum":0}}""");

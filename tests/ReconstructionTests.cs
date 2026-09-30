@@ -51,6 +51,16 @@ public class ReconstructionTests : IAsyncLifetime
         Assert.Contains("timed out", error.Message); Assert.Equal(1, model.Calls); Assert.Equal(1, job.Calls);
         Assert.Equal(0, job.Processed); Assert.Empty(await db.ImportResults.Where(x => x.JobId == job.Id).ToListAsync());
     }
+    [Theory]
+    [InlineData(0, "active", "goal", "importance (amount)")]
+    [InlineData(3, "Mara", "goal", "status (target)")]
+    [InlineData(3, "active", "quest", "kind (value)")]
+    public void ThreadRepairIdentifiesTheIncorrectField(int amount, string target, string value, string expected)
+    {
+        var claim = Claim("thread:crossing", "thread", "Cross the bay.", [0], "Cross the bay", target, value, amount);
+        var error = Assert.Throws<InvalidOperationException>(() => Reconstruction.ValidateClaim(claim, [0], []));
+        Assert.Contains(expected, error.Message);
+    }
     private static int[] Evidence(ProviderPrompt prompt)
     {
         var text = prompt.Input.Split("EVIDENCE:\n")[1].Split("\nRELATED LEDGER:")[0];
