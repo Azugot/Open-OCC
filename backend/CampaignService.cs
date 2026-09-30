@@ -10,12 +10,15 @@ public record ApproveImport(Guid ExpectedCheckpointId, StoryState State, ReviewD
 
 public static class CampaignService
 {
-    public static async Task<Branch> Create(StoryDb db, CreateCampaign request, CancellationToken ct)
+    public static async Task<Branch> Create(StoryDb db, CreateCampaign request, CancellationToken ct, EngineSettings? settings = null)
     {
         RequireText(request.Name, 100, "Campaign name");
         var campaign = new Campaign { Name = request.Name.Trim() };
         var branch = new Branch { CampaignId = campaign.Id };
         var checkpoint = new Checkpoint { BranchId = branch.Id, Label = "Starting point", StateJson = Json.Write(request.Synthetic ? StoryState.Synthetic : StoryState.Empty) };
+        var world = request.Synthetic ? StoryWorld.Crownspire() : StoryWorld.FromState(StoryState.Empty);
+        world.Settings = settings ?? new(); world.Settings.Validate();
+        checkpoint.WorldJson = Json.Write(world);
         branch.HeadCheckpointId = checkpoint.Id;
         db.AddRange(campaign, branch, checkpoint);
         db.Messages.Add(new Message { BranchId = branch.Id, Sequence = 0, Role = "assistant", Content = request.Synthetic
@@ -34,7 +37,7 @@ public static class CampaignService
         var snapshots = await db.Checkpoints.AsNoTracking().Where(x => x.BranchId == branchId && x.Sequence <= at.Sequence).ToListAsync(ct);
         foreach (var snapshot in snapshots)
         {
-            var copy = new Checkpoint { BranchId = branch.Id, Sequence = snapshot.Sequence, Label = snapshot.Label, StateJson = snapshot.StateJson, CreatedAt = snapshot.CreatedAt };
+            var copy = new Checkpoint { BranchId = branch.Id, Sequence = snapshot.Sequence, Label = snapshot.Label, StateJson = snapshot.StateJson, WorldJson = snapshot.WorldJson, CreatedAt = snapshot.CreatedAt };
             if (snapshot.Id == at.Id) branch.HeadCheckpointId = copy.Id;
             db.Checkpoints.Add(copy);
         }
@@ -53,14 +56,14 @@ public static class CampaignService
         return branch;
     }
 
-    public static async Task CommitTurn(StoryDb db, GenerationRun run, string narrative, CancellationToken ct)
+    public static async Task CommitTurn(StoryDb db, GenerationRun run, string narrative, CancellationToken ct, StoryState? nextState = null, StoryWorld? nextWorld = null)
     {
         var branch = await db.Branches.SingleAsync(x => x.Id == run.BranchId, ct);
         if (branch.HeadCheckpointId != run.ExpectedCheckpointId) throw new DbUpdateConcurrencyException("Branch changed. Reload before continuing.");
         var current = await db.Checkpoints.SingleAsync(x => x.Id == branch.HeadCheckpointId, ct);
-        var state = Json.Read<StoryState>(current.StateJson);
+        var state = nextState ?? Json.Read<StoryState>(current.StateJson);
         state.Validate();
-        var checkpoint = new Checkpoint { BranchId = branch.Id, Sequence = current.Sequence + 2, Label = "Simulated turn", StateJson = Json.Write(state) };
+        var checkpoint = new Checkpoint { BranchId = branch.Id, Sequence = current.Sequence + 2, Label = nextWorld is null ? "Simulated turn" : "Story turn", StateJson = Json.Write(state), WorldJson = nextWorld is null ? current.WorldJson : Json.Write(nextWorld) };
         db.Messages.AddRange(
             new Message { BranchId = branch.Id, Sequence = current.Sequence + 1, Role = "user", Content = run.Action, Provider = run.Provider, Model = run.Model },
             new Message { BranchId = branch.Id, Sequence = current.Sequence + 2, Content = narrative, Provider = run.Provider, Model = run.Model });
@@ -95,7 +98,10 @@ public static class CampaignService
             fact.Provenance = decision.Accept ? "user-confirmed" : "imported";
             fact.EffectiveSequence = current.Sequence + 1;
         }
-        var checkpoint = new Checkpoint { BranchId = branch.Id, Sequence = current.Sequence + 1, Label = "Approved import", StateJson = Json.Write(request.State) };
+        // Imports establish a new scene. Rebuild neutral participants rather than carrying unrelated synthetic secrets.
+        var importedWorld = StoryWorld.FromState(request.State);
+        importedWorld.Settings = StoryWorld.From(current).Settings;
+        var checkpoint = new Checkpoint { BranchId = branch.Id, Sequence = current.Sequence + 1, Label = "Approved import", StateJson = Json.Write(request.State), WorldJson = Json.Write(importedWorld) };
         db.Checkpoints.Add(checkpoint);
         db.Messages.Add(new Message { BranchId = branch.Id, Sequence = checkpoint.Sequence, Role = "system", Provider = "manual-review", Model = "deterministic-v1", Content = $"Import approved by you. Resume at {request.State.Location} · {request.State.Time}. {request.State.Objective}" });
         branch.HeadCheckpointId = checkpoint.Id;

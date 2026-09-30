@@ -1,0 +1,451 @@
+.engine-page {
+  max-width: 1360px;
+  margin: auto;
+  padding: 42px 48px 70px;
+}
+.engine-heading,
+.engine-toolbar,
+.engine-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.engine-eyebrow {
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: #82916a;
+  margin-bottom: 12px;
+}
+.engine-heading h1 {
+  margin-bottom: 8px;
+}
+.engine-heading p {
+  margin-bottom: 24px;
+}
+.engine-spoilers {
+  display: flex;
+  flex-direction: row;
+  margin: 0 0 16px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #64705d;
+  cursor: pointer;
+}
+.engine-toolbar {
+  padding: 16px 0;
+  border-top: 1px solid #e1e6dc;
+  border-bottom: 1px solid #e1e6dc;
+}
+.engine-toolbar label,
+.engine-section-heading label {
+  display: flex;
+  flex-direction: row;
+  margin: 0;
+  align-items: center;
+  gap: 12px;
+}
+.engine-toolbar select,
+.engine-section-heading select,
+.engine-settings select,
+.engine-settings input {
+  padding: 9px;
+  border: 1px solid #dce1d8;
+  border-radius: 7px;
+  background: white;
+  color: #304536;
+  max-width: 100%;
+}
+.engine-toolbar > span,
+.engine-section-heading > span {
+  font-size: 12px;
+  color: #74806c;
+}
+.engine-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 24px 0;
+  flex-wrap: wrap;
+}
+.engine-tabs button {
+  background: transparent;
+  border-color: transparent;
+}
+.engine-tabs button.active {
+  background: #e7edde;
+  border-color: #c9d4ba;
+  color: #395135;
+}
+.engine-error {
+  padding: 14px 18px;
+  background: #fff1ee;
+  color: #8d4335;
+  border: 1px solid #e9c8bf;
+  margin-top: 18px;
+  border-radius: 8px;
+}
+.engine-runs {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 28px;
+}
+.engine-run {
+  padding: 16px 20px;
+  border: 1px solid #dfe5d9;
+  border-radius: 9px;
+  background: #fff;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+}
+.engine-run.running {
+  border-left: 4px solid #819a61;
+}
+.engine-run.paused {
+  border-left: 4px solid #ba944c;
+}
+.engine-run p {
+  margin: 5px 0;
+  font-size: 13px;
+}
+.engine-run small {
+  display: block;
+}
+.engine-run > div:last-child {
+  display: flex;
+  gap: 8px;
+}
+.engine-section-heading {
+  margin: 24px 0 16px;
+}
+.engine-section-heading h2 {
+  margin: 0;
+}
+.engine-events {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.engine-events li {
+  display: flex;
+  gap: 18px;
+  padding: 20px 0;
+  border-top: 1px solid #e0e5da;
+  scroll-margin: 80px;
+}
+.engine-events li:focus {
+  outline: 2px solid #8c9f60;
+  outline-offset: 4px;
+}
+.engine-event-order {
+  border-radius: 50%;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  background: #e8eede;
+  color: #657752;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+.engine-events article {
+  flex: 1;
+}
+.engine-events article > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.engine-events p {
+  margin: 10px 0;
+  color: #495745;
+  white-space: pre-wrap;
+}
+.engine-events article > small {
+  display: block;
+  margin-top: 10px;
+}
+.engine-badge {
+  display: inline-block;
+  margin-right: 7px;
+  margin-bottom: 5px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 11px;
+  background: #edf1e7;
+  color: #617158;
+}
+.engine-badge.success {
+  background: #e2efd9;
+  color: #3b642d;
+}
+.engine-badge.failure {
+  background: #f4e6dc;
+  color: #8b5540;
+}
+.engine-footnote {
+  font-size: 12px;
+  margin-top: 24px;
+  color: #78846d;
+}
+.engine-empty {
+  padding: 24px;
+  color: #88917d;
+  background: #f1f3ec;
+  border-radius: 9px;
+}
+.engine-graph-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 20px 0;
+}
+.engine-graph-controls label {
+  display: flex;
+  flex-direction: row;
+  margin: 0;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+.engine-graph-controls label > span {
+  height: 9px;
+  width: 9px;
+  border-radius: 50%;
+}
+.engine-graph-controls button {
+  padding: 7px;
+}
+.engine-graph-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 18px;
+}
+.engine-graph-scroll {
+  overflow: auto;
+  border: 1px solid #dde4d5;
+  border-radius: 10px;
+  background: radial-gradient(#dce3d6 0.7px, transparent 0.7px);
+  background-size: 18px 18px;
+  min-height: 380px;
+}
+.engine-graph-scroll svg {
+  display: block;
+  width: 100%;
+  min-width: 400px;
+  min-height: 380px;
+}
+.engine-edge-label {
+  font-size: 10px;
+  fill: #73816a;
+  paint-order: stroke;
+  stroke: #f7f8f4;
+  stroke-width: 4px;
+}
+.engine-node {
+  cursor: pointer;
+}
+.engine-node:focus circle,
+.engine-node:hover circle {
+  stroke: #27362e;
+  stroke-width: 4px;
+}
+.engine-node-label {
+  font-size: 12px;
+  fill: #33472f;
+  paint-order: stroke;
+  stroke: #f7f8f4;
+  stroke-width: 4px;
+}
+.engine-inspector {
+  background: white;
+  border: 1px solid #dde4d5;
+  border-radius: 10px;
+  padding: 22px;
+  overflow-wrap: anywhere;
+}
+.engine-inspector h3 {
+  margin-bottom: 12px;
+}
+.engine-inspector h4 {
+  margin: 20px 0 10px;
+}
+.engine-inspector p {
+  font-size: 13px;
+}
+.engine-relation {
+  border-top: 1px solid #e5e9e0;
+  padding: 12px 0;
+}
+.engine-relation strong {
+  font-size: 12px;
+  display: block;
+}
+.engine-relation button,
+.engine-occurrence-link,
+.engine-evidence {
+  font-size: 11px;
+  padding: 6px 8px;
+  margin-top: 8px;
+}
+.engine-occurrence-link {
+  display: block;
+  width: 100%;
+  text-align: left;
+  justify-content: flex-start;
+  line-height: 1.6;
+}
+.engine-memory-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+  margin-top: 28px;
+}
+.engine-memory,
+.engine-character,
+.engine-check {
+  padding: 20px;
+  background: #fff;
+  border: 1px solid #dfe5d8;
+  border-radius: 10px;
+  margin-bottom: 14px;
+}
+.engine-memory p {
+  color: #526049;
+  margin: 12px 0;
+}
+.engine-memory textarea {
+  width: 100%;
+  margin: 12px 0;
+  border: 1px solid #cfdac4;
+  border-radius: 6px;
+  padding: 10px;
+  resize: vertical;
+}
+.engine-actions {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.engine-actions button {
+  font-size: 12px;
+  padding: 7px 9px;
+}
+.engine-evidence {
+  border: 0;
+  padding-left: 0;
+  text-decoration: underline;
+}
+.engine-settings {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  background: #edf1e6;
+  border-radius: 10px;
+  padding: 24px;
+  margin-bottom: 32px;
+}
+.engine-settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.engine-settings button {
+  justify-self: start;
+  grid-column: 1/-1;
+}
+.engine-character-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin: 24px 0;
+}
+.engine-character {
+  margin: 0;
+}
+.engine-character dl {
+  margin: 0 0 16px;
+}
+.engine-character dl > div {
+  margin-bottom: 12px;
+}
+.engine-character dt {
+  font-size: 11px;
+  color: #86937c;
+}
+.engine-character dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+.engine-check > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.engine-check p {
+  margin: 10px 0 0;
+  color: #5c6953;
+}
+.engine-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+@media (max-width: 1100px) {
+  .engine-page {
+    padding: 30px 24px;
+  }
+  .engine-graph-layout {
+    grid-template-columns: 1fr;
+  }
+  .engine-memory-columns {
+    gap: 14px;
+  }
+  .engine-heading h1 {
+    font-size: 34px;
+  }
+}
+@media (max-width: 700px) {
+  .engine-page {
+    padding: 25px 16px;
+  }
+  .engine-memory-columns,
+  .engine-settings {
+    grid-template-columns: 1fr;
+  }
+  .engine-settings {
+    padding: 18px;
+  }
+  .engine-run {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .engine-events article > div {
+    gap: 4px;
+  }
+  .engine-events li {
+    gap: 12px;
+  }
+  .engine-toolbar label {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+  }
+  .engine-toolbar select {
+    max-width: 260px;
+  }
+  .engine-check > div {
+    flex-wrap: wrap;
+  }
+}

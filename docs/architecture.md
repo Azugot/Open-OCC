@@ -1,4 +1,4 @@
-# Foundation architecture
+# Story workspace architecture
 
 One ASP.NET Core application owns campaign APIs, provider contracts, durable import jobs and EF persistence. React/Vite compiles to static assets served by Nginx, which proxies `/api` to the backend. PostgreSQL is internal to Compose. There are no extra worker deployments, Redis or vector databases.
 
@@ -18,10 +18,8 @@ An optional bearer token gates `/api`. Browser storage holds that token for the 
 
 ## Next milestones
 
-1. Live OpenAI-compatible/Ollama providers with capability and cancellation tests, then native adapters.
-2. Agent-assisted extraction with structured candidate facts, contradictions, rumors, corrections, budgets and usage.
-3. Approved reconstruction checkpoint validated against the supplied campaign transcript.
-4. NPC-specific knowledge, deterministic mechanics, PostgreSQL retrieval, summaries and continuity checks.
-5. World versioning, corrections, edit/regenerate shortcuts, portable export/reimport and expanded operational tests.
+The autonomous slice now uses checkpoint world JSON, persisted generation drafts, independent perception-filtered character contexts, structured director resolutions, server-generated d20 checks, scoped memory retrieval and an interactive graph. See [storyteller behavior](storyteller.md). OpenAI-compatible and Ollama adapters support final JSON responses; token streaming is deferred.
 
-The root specification remains the product authority. This implementation deliberately satisfies its first foundation objective and documents later-phase features as unfinished.
+Remaining milestones include agent-assisted extraction/reconstruction, evaluation against the supplied transcript, reusable world definitions, full progression mechanics, edit/regenerate shortcuts, portable export/reimport and distributed worker leasing.
+
+The root specification remains the product authority; this slice adds the autonomous storyteller while keeping transcript reconstruction and later features explicit.

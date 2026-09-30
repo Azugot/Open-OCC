@@ -23,7 +23,7 @@ public sealed record StoryState(string Location, string Time, string Objective, 
     }
     public static StoryState Synthetic => new("Crownspire Academy · Registration hall", "Imperial Year 731 · Day 1 · 08:00",
         "Register for your first term", "Rested", new() { ["Sword practice"] = "F · 2/5", ["Aura circulation"] = "F · 1/5" },
-        new() { ["Practice sword"] = 1, ["Uniform"] = 1, ["Crowns"] = 20 }, ["Lyra Fen"]);
+        new() { ["Practice sword"] = 1, ["Uniform"] = 1, ["Crowns"] = 20 }, ["Lyra Fen", "Clerk Orin", "Guard Sera"]);
     public static StoryState Empty => new("Not yet established", "Not yet established", "Import and approve a resume checkpoint", "Unknown", new(), new(), []);
 }
 
@@ -51,6 +51,7 @@ public class Checkpoint
     public int Sequence { get; set; }
     public string Label { get; set; } = "";
     public string StateJson { get; set; } = "{}";
+    public string WorldJson { get; set; } = "{}";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 public class Message
@@ -74,6 +75,7 @@ public class GenerationRun
     public string Provider { get; set; } = "";
     public string Model { get; set; } = "";
     public string? Error { get; set; }
+    public string DraftJson { get; set; } = "{}";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 public class ImportedSource

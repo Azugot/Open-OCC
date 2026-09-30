@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { api, downloadSource, post } from "./api";
+import StoryEngine from "./StoryEngine";
 import type {
   Branch,
   Campaign,
@@ -30,7 +31,8 @@ import type {
   Workspace,
 } from "./api";
 
-type Page = "library" | "story" | "imports" | "branches" | "providers";
+type Page =
+  "library" | "story" | "engine" | "imports" | "branches" | "providers";
 type Decision = {
   factId: string;
   accept: boolean;
@@ -116,7 +118,7 @@ export default function App() {
       setPage("story");
     });
   const navigate = (next: Page) => {
-    if (busy) return;
+    if (busy && next !== "story" && next !== "engine") return;
     setPage(next);
     setError("");
     setNotice("");
@@ -224,6 +226,13 @@ export default function App() {
             <BookOpen size={18} /> Continue story
           </button>
           <button
+            className={page === "engine" ? "active" : ""}
+            disabled={!workspace}
+            onClick={() => navigate("engine")}
+          >
+            <Sparkles size={18} /> Live world
+          </button>
+          <button
             className={page === "imports" ? "active" : ""}
             disabled={!workspace}
             onClick={() => navigate("imports")}
@@ -264,7 +273,7 @@ export default function App() {
           >
             <Settings size={18} /> Providers & settings
           </button>
-          <span className="version">FOUNDATION / 0.1</span>
+          <span className="version">STORYTELLER / 0.2</span>
         </div>
       </aside>
       <main>
@@ -275,6 +284,7 @@ export default function App() {
               {
                 library: "Story library",
                 story: "Story",
+                engine: "Live world",
                 imports: "Import & review",
                 branches: "Timelines",
                 providers: "Settings",
@@ -301,6 +311,13 @@ export default function App() {
               <X size={16} />
             </button>
           </div>
+        )}
+        {page === "engine" && workspace && (
+          <StoryEngine
+            workspace={workspace}
+            busy={busy}
+            onRefresh={() => loadWorkspace(workspace.branch.id)}
+          />
         )}
         {page === "library" && (
           <section className="page library">
@@ -407,10 +424,10 @@ export default function App() {
             <div className="foundation-note">
               <Sparkles size={18} />
               <p>
-                <strong>A foundation you can explore.</strong> Story turns are
-                clearly labeled simulations. Imports use your review to
-                establish canon; AI reconstruction is coming in a later
-                milestone.
+                <strong>A world you can explore.</strong> Independent
+                characters, a director, world graphs and memory. Fixture
+                profiles need no key; live models are configurable. Imports
+                use your review to establish canon.
               </p>
             </div>
           </section>
@@ -423,7 +440,7 @@ export default function App() {
                   <span className="eyebrow">{workspace.branch.name}</span>
                   <h1>{workspace.campaign.name}</h1>
                 </div>
-                <span className="badge">Fixture mode</span>
+                <span className="badge">Director turns</span>
               </div>
               <div className="scene-location">
                 <MapPin size={15} /> {workspace.state.location}
@@ -460,7 +477,7 @@ export default function App() {
                   disabled={busy}
                 />
                 <div>
-                  <span>Free-form actions · Simulated continuation</span>
+                  <span>Free-form actions · Director-coordinated story</span>
                   {generation.current ? (
                     <button
                       type="button"
@@ -527,19 +544,17 @@ export default function App() {
               </div>
               <div className="state-section">
                 <h3>REVIEWED FACTS</h3>
-                {workspace.facts.length ? (
-                  workspace.facts.map((f) => (
-                    <div className="fact" key={f.id}>
-                      <span className="badge">
-                        {f.visibility === "narrator"
-                          ? "Narrator only"
-                          : "Public"}
-                      </span>
-                      <p>{f.text}</p>
-                    </div>
-                  ))
+                {workspace.facts.some((f) => f.visibility === "public") ? (
+                  workspace.facts
+                    .filter((f) => f.visibility === "public")
+                    .map((f) => (
+                      <div className="fact" key={f.id}>
+                        <span className="badge">Public</span>
+                        <p>{f.text}</p>
+                      </div>
+                    ))
                 ) : (
-                  <small>No imported facts yet</small>
+                  <small>No public reviewed facts yet</small>
                 )}
               </div>
               <div className="checkpoint-saved">
@@ -902,8 +917,11 @@ export default function App() {
                     </div>
                   ))}
                   <p>
-                    Task routing is configured in the server environment. Memory
-                    and AI reconstruction are not yet active.
+                    Choose character and director profiles in each campaign's
+                    Live world author settings. Separate character sessions use
+                    the character profile, and the director coordinates
+                    narration and memory. AI transcript reconstruction remains
+                    deferred.
                   </p>
                 </div>
                 {profiles.profiles.map((p) => (
@@ -918,8 +936,12 @@ export default function App() {
                           body: JSON.stringify({
                             model: p.model,
                             enabled: p.enabled,
+                            ...(["character", "director"].includes(p.id)
+                              ? { adapter: p.adapter }
+                              : {}),
                           }),
                         });
+                        setProfiles(await api<Profiles>("/providers"));
                         setNotice(`${p.name} profile saved.`);
                       });
                     }}
@@ -928,8 +950,8 @@ export default function App() {
                       <h2>{p.name}</h2>
                       <span className="badge">
                         {p.capabilities.available
-                          ? "Fixture available"
-                          : "Adapter stub"}
+                          ? "Configured"
+                          : "Needs configuration"}
                       </span>
                     </div>
                     <p>{p.capabilities.note}</p>
@@ -938,6 +960,31 @@ export default function App() {
                         ? "Server configuration present"
                         : "Server credentials not configured"}
                     </small>
+                    {["character", "director"].includes(p.id) && (
+                      <label>
+                        Adapter
+                        <select
+                          value={p.adapter}
+                          onChange={(e) =>
+                            setProfiles({
+                              ...profiles,
+                              profiles: profiles.profiles.map((x) =>
+                                x.id === p.id
+                                  ? { ...x, adapter: e.target.value }
+                                  : x,
+                              ),
+                            })
+                          }
+                        >
+                          <option value="fixture">Deterministic fixture</option>
+                          <option value="openai">OpenAI</option>
+                          <option value="openai-compatible">
+                            OpenAI-compatible
+                          </option>
+                          <option value="ollama">Ollama</option>
+                        </select>
+                      </label>
+                    )}
                     <label>
                       Model
                       <input

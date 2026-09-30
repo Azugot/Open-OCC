@@ -1,4 +1,27 @@
-# Foundation verification
+# Verification history
+
+## Autonomous storyteller — September 29, 2026
+
+- **72 passing .NET tests**: the original 12 foundation tests, 39 provider/configuration/transport cases, and 21 engine cases. Engine coverage includes perception isolation, privately moved/introduced entities, ordered reactions, NPC/beat limits, off-screen time advancement, d20 totals including natural 1/20, persisted rolls/steps across retries, invalid outcome regeneration, handoff after movement, cancellation, startup recovery, stale drafts, graph/fork evidence and memory ownership/author corrections.
+- **TypeScript/Vite production build passed**. No new frontend dependency was required.
+- **Migration consistency passed**. The new PostgreSQL migration applied on an isolated database; previous rows receive `{}` defaults for world/draft data and use the legacy-state fallback.
+- **Real HTTP/PostgreSQL storyteller smoke passed**: graph history, cross-branch checkpoint rejection, memory edit/pin/removal, two independently configured role profiles, compatible HTTP generation, saved-step/dice retry, explicit cancellation and concurrent turn reservation. Its temporary loopback provider returns protocol fixtures, so it verifies transport/orchestration rather than actual inference.
+- **Foundation HTTP smoke and restart persistence passed**: checkpoints, messages, state, original source checksum and bytes survived backend restart.
+- **Protected access/client cancellation smoke passed**: missing token/custom write header rejection, aborted-request cancellation and unchanged preceding checkpoint.
+- **Browser checks passed** for creating Crownspire, watching Live activity during generation, spoiler-gated character/dice panels, a saved memory correction, graph entity selection and evidence. The default compact viewport was inspected and checkbox layout corrected. Screenshot proof is saved as a task artifact.
+- **Compose validation and whitespace checks passed**. NuGet vulnerability-feed retrieval emitted NU1900 in this network-restricted environment; package compilation/tests completed successfully.
+
+The run used a disposable PostgreSQL 17 container, local .NET backend and Vite frontend. Existing application stacks and the user's transcript were left untouched. Temporary test services were stopped afterward.
+
+To reproduce the engine smoke, run a disposable backend with `CHARACTER_BASE_URL` and `DIRECTOR_BASE_URL` set to `http://127.0.0.1:11449/v1`, both role API keys set to the local test placeholder `local-smoke-token`, then run:
+
+```powershell
+node tests/engine-smoke.mjs http://127.0.0.1:5080
+```
+
+The script owns a temporary protocol server on port 11449 and adds synthetic campaigns. Set `APP_ACCESS_TOKEN` in the test terminal when the backend is protected. Actual model inference/quality, token streaming, reusable worlds, full progression and automatic transcript reconstruction remain unverified or deferred. Configure and evaluate chosen live models separately.
+
+## Original foundation — September 11, 2026
 
 Verified locally on September 11, 2026 with .NET SDK 10.0.400, Node 26.7.0, Docker Desktop and Docker Compose 5.1.4. Container builds use .NET 10, Node 24, Nginx and PostgreSQL 17.
 
@@ -52,6 +75,6 @@ docker compose --env-file .env.example -p open-occ-verify stop
 
 The separate restore-check project can likewise be stopped with `-p open-occ-restore-check`. Volumes and the ignored `.local/open-occ-verify.dump` retain the synthetic verification data. Neither stack imports the user's Word transcript or makes remote AI requests.
 
-## Scope limits
+## Original foundation scope limits
 
-These checks validate the foundation only. Live AI providers, streaming, semantic reconstruction, per-NPC knowledge, transcript search, portable campaign export/reimport and mobile browser testing remain unverified/unimplemented as described in the README. SQLite tests complement the real PostgreSQL smoke; they do not claim to reproduce every PostgreSQL concurrency behavior.
+The September 11 checks validated the foundation only. See the September 29 results above for the implemented storyteller capabilities and current limits. SQLite tests complement real PostgreSQL smoke; they do not claim to reproduce every PostgreSQL concurrency behavior.

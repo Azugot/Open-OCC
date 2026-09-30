@@ -19,6 +19,7 @@ public class StoryDb(DbContextOptions<StoryDb> options) : DbContext(options)
     {
         b.Entity<Branch>().Property(x => x.Revision).IsConcurrencyToken();
         b.Entity<ImportJob>().Property(x => x.Status).IsConcurrencyToken();
+        b.Entity<GenerationRun>().Property(x => x.Status).IsConcurrencyToken();
         b.Entity<Branch>().HasOne<Campaign>().WithMany().HasForeignKey(x => x.CampaignId).OnDelete(DeleteBehavior.Restrict);
         b.Entity<Checkpoint>().HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
         b.Entity<Message>().HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);

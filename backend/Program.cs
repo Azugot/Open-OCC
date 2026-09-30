@@ -45,14 +45,12 @@ if (!app.Environment.IsEnvironment("Testing"))
     await db.Database.MigrateAsync();
     foreach (var profile in ProviderRegistry.Defaults(app.Configuration))
         if (!await db.Providers.AnyAsync(x => x.Id == profile.Id)) db.Providers.Add(profile);
-    foreach (var run in await db.GenerationRuns.Where(x => x.Status == "running").ToListAsync())
-    { run.Status = "interrupted"; run.Error = "Application restarted before the turn completed. No partial turn was committed."; }
-    await db.SaveChangesAsync();
+    await StoryEngine.Recover(db);
 }
 app.MapGet("/health", async (StoryDb db) => await db.Database.CanConnectAsync() ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
 app.MapGet("/api/campaigns", async (StoryDb db, CancellationToken ct) => await db.Campaigns.OrderByDescending(x => x.CreatedAt).Select(c => new
     { c.Id, c.Name, c.CreatedAt, branches = db.Branches.Where(b => b.CampaignId == c.Id).OrderBy(b => b.CreatedAt).Select(b => new { b.Id, b.Name }).ToList() }).ToListAsync(ct));
-app.MapPost("/api/campaigns", async (CreateCampaign request, StoryDb db, CancellationToken ct) => Results.Ok(await CampaignService.Create(db, request, ct)));
+app.MapPost("/api/campaigns", async (CreateCampaign request, StoryDb db, CancellationToken ct) => Results.Ok(await CampaignService.Create(db, request, ct, new EngineSettings(app.Configuration["CHARACTER_PROVIDER"] ?? "fixture", app.Configuration["DIRECTOR_PROVIDER"] ?? app.Configuration["NARRATION_PROVIDER"] ?? "fixture"))));
 app.MapGet("/api/branches/{id:guid}", async (Guid id, StoryDb db, CancellationToken ct) =>
 {
     var branch = await db.Branches.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException();
@@ -71,41 +69,32 @@ app.MapPost("/api/branches/{id:guid}/turns", async (Guid id, TurnRequest request
     CampaignService.RequireText(request.Action, 4000, "Player action");
     var branch = await db.Branches.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException();
     if (branch.HeadCheckpointId != request.ExpectedCheckpointId) return Results.Conflict(new { error = "Reload this branch before generating." });
-    var profileId = config["NARRATION_PROVIDER"] ?? "fixture";
-    var profile = await db.Providers.SingleOrDefaultAsync(x => x.Id == profileId, ct) ?? throw new InvalidOperationException("Narration provider profile not found.");
-    var provider = ProviderRegistry.Resolve(profile.Adapter);
-    if (!profile.Enabled || !provider.Capabilities.Available) throw new InvalidOperationException(provider.Capabilities.Note);
+    if (StoryEngine.IsExecuting(id) || await db.GenerationRuns.AnyAsync(x => x.BranchId == id && (x.Status == "running" || x.Status == "paused"), ct))
+        throw new InvalidOperationException("Finish, retry or cancel the existing draft first.");
     var checkpoint = await db.Checkpoints.SingleAsync(x => x.Id == branch.HeadCheckpointId, ct);
-    var run = new GenerationRun { BranchId = id, Action = request.Action.Trim(), ExpectedCheckpointId = checkpoint.Id, Provider = profile.Id, Model = config["NARRATION_MODEL"] ?? profile.Model };
-    db.GenerationRuns.Add(run);
-    await db.SaveChangesAsync(ct);
-    try
-    {
-        var facts = await db.Facts.Where(x => x.BranchId == id && x.ReviewStatus == "accepted" && x.Visibility == "public").Select(x => x.Text).ToArrayAsync(ct);
-        var narrative = await provider.Narrate(new NarrationRequest(run.Action, Json.Read<StoryState>(checkpoint.StateJson), facts), ct);
-        // Refresh the branch: the database concurrency token also catches a later competing commit.
-        await db.Entry(branch).ReloadAsync(ct);
-        await CampaignService.CommitTurn(db, run, narrative, ct);
-        return Results.Ok(new { run.Id });
-    }
-    catch (Exception e)
-    {
-        db.ChangeTracker.Clear();
-        var saved = await db.GenerationRuns.SingleAsync(x => x.Id == run.Id, CancellationToken.None);
-        saved.Status = e is OperationCanceledException ? "cancelled" : "failed";
-        saved.Error = "Turn did not commit. Reload the branch and retry.";
-        await db.SaveChangesAsync(CancellationToken.None);
-        throw;
-    }
+    var world = StoryWorld.From(checkpoint);
+    var profile = await db.Providers.SingleOrDefaultAsync(x => x.Id == world.Settings.DirectorProfile, ct);
+    var run = new GenerationRun { BranchId = id, Action = request.Action.Trim(), ExpectedCheckpointId = checkpoint.Id,
+        Provider = world.Settings.DirectorProfile, Model = profile?.Model ?? "fixture-v1" };
+    branch.Revision++; // Reserve against concurrent turn starts or author edits.
+    db.GenerationRuns.Add(run); await db.SaveChangesAsync(ct);
+    await StoryEngine.Execute(db, run, config, ct);
+    return Results.Ok(new { run.Id });
 });
 app.MapGet("/api/providers", async (StoryDb db, IConfiguration config) => new {
     tasks = new { narration = config["NARRATION_PROVIDER"] ?? "fixture", reconstruction = config["RECONSTRUCTION_PROVIDER"] ?? "fixture", memory = config["MEMORY_PROVIDER"] ?? "fixture" },
     profiles = (await db.Providers.OrderBy(x => x.Name).ToListAsync()).Select(p => new { p.Id, p.Name, p.Adapter, p.Model, p.Enabled,
-        configured = p.Id == "fixture" || (p.Id == "ollama" ? !string.IsNullOrWhiteSpace(config["OLLAMA_BASE_URL"]) : !string.IsNullOrWhiteSpace(config[$"{p.Id.ToUpperInvariant()}_API_KEY"])), capabilities = ProviderRegistry.Resolve(p.Adapter).Capabilities }) });
+        configured = AgentProviderFactory.Capabilities(p, config).Available, capabilities = AgentProviderFactory.Capabilities(p, config) }) });
 app.MapPut("/api/providers/{id}", async (string id, ProfileUpdate request, StoryDb db) =>
 {
     var profile = await db.Providers.SingleOrDefaultAsync(x => x.Id == id) ?? throw new KeyNotFoundException();
     if (request.Model is null || request.Model.Length > 200) throw new InvalidOperationException("Provide a model name of at most 200 characters.");
+    if (request.Adapter is not null)
+    {
+        if (id is not ("character" or "director") || request.Adapter is not ("fixture" or "openai" or "openai-compatible" or "ollama"))
+            throw new InvalidOperationException("Role profiles support fixture, openai, openai-compatible or ollama.");
+        profile.Adapter = request.Adapter;
+    }
     profile.Model = request.Model.Trim(); profile.Enabled = request.Enabled;
     await db.SaveChangesAsync(); return Results.NoContent();
 });
@@ -149,7 +138,8 @@ app.MapPost("/api/imports/{id:guid}/retry", async (Guid id, StoryDb db) =>
     job.Status = "queued"; job.Error = null; await db.SaveChangesAsync(); return Results.NoContent();
 });
 app.MapPost("/api/imports/{id:guid}/approve", async (Guid id, ApproveImport request, StoryDb db, CancellationToken ct) => { await CampaignService.Approve(db, id, request, ct); return Results.NoContent(); });
+EngineApi.Map(app);
 app.Run();
 
-public record ProfileUpdate(string Model, bool Enabled);
+public record ProfileUpdate(string Model, bool Enabled, string? Adapter = null);
 public partial class Program { }
