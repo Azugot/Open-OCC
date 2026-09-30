@@ -106,7 +106,7 @@ public sealed class OpenAIResponsesProvider(HttpClient http, string model) : Htt
     }
 }
 
-public sealed class OpenAICompatibleProvider(HttpClient http, string model) : HttpStoryProvider(http, model)
+public sealed class OpenAICompatibleProvider(HttpClient http, string model, bool deepSeek = false) : HttpStoryProvider(http, model)
 {
     public override ProviderCapabilities Capabilities => new(true, true, true, true, false, "OpenAI-compatible Chat Completions with SSE and JSON mode.");
     public override async IAsyncEnumerable<ProviderEvent> Stream(ProviderPrompt p, [EnumeratorCancellation] CancellationToken ct)
@@ -129,10 +129,11 @@ public sealed class OpenAICompatibleProvider(HttpClient http, string model) : Ht
         var schemaText = schema?.GetRawText(); var instructions = schemaText is null ? p.Instructions : p.Instructions + "\nReturn JSON matching this schema exactly:\n" + schemaText;
         var payload = new Dictionary<string, object> { ["model"] = Model, ["messages"] = new[] { new { role = "system", content = instructions }, new { role = "user", content = p.Input } }, ["max_tokens"] = p.MaxOutputTokens, ["stream"] = false };
         if (schema is not null) payload["response_format"] = new { type = "json_object" };
+        if (schema is not null && deepSeek) payload["thinking"] = new { type = "disabled" };
         using var req = new HttpRequestMessage(HttpMethod.Post, "chat/completions") { Content = Body(payload) };
         using var res = await Send(Http, req, HttpCompletionOption.ResponseContentRead, ct); using var doc = JsonDocument.Parse(await Read(res.Content, ct));
         var text = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
-        if (string.IsNullOrWhiteSpace(text)) throw new InvalidOperationException("Provider returned no output text.");
+        if (string.IsNullOrWhiteSpace(text)) throw new InvalidOperationException("The model returned no final output text. Check the output token limit and model reasoning settings before resuming.");
         var usage = doc.RootElement.TryGetProperty("usage", out var u) ? u : default;
         return new(text, usage.ValueKind == JsonValueKind.Object && usage.TryGetProperty("prompt_tokens", out var i) ? i.GetInt32() : null, usage.ValueKind == JsonValueKind.Object && usage.TryGetProperty("completion_tokens", out var o) ? o.GetInt32() : null);
     }
@@ -239,7 +240,7 @@ public sealed class ProviderFactory(IHttpClientFactory clients, IConfiguration c
         if (profile.Adapter == "anthropic") { client.DefaultRequestHeaders.Add("x-api-key", key); client.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01"); }
         else if (!string.IsNullOrWhiteSpace(key)) client.DefaultRequestHeaders.Authorization = new("Bearer", key);
         client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
-        return profile.Adapter switch { "openai" => new OpenAIResponsesProvider(client, profile.Model), "anthropic" => new AnthropicProvider(client, profile.Model), "ollama" => new OllamaProvider(client, profile.Model), "lemonade" => new LemonadeProvider(client, profile.Model), _ => new OpenAICompatibleProvider(client, profile.Model) };
+        return profile.Adapter switch { "openai" => new OpenAIResponsesProvider(client, profile.Model), "anthropic" => new AnthropicProvider(client, profile.Model), "ollama" => new OllamaProvider(client, profile.Model), "lemonade" => new LemonadeProvider(client, profile.Model), _ => new OpenAICompatibleProvider(client, profile.Model, profile.Id == "deepseek") };
     }
 
     public bool IsConfigured(ProviderProfile profile)

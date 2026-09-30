@@ -27,6 +27,21 @@ public sealed class ProviderTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => send(request, ct);
     }
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StructuredDeepSeekCallsDisableThinkingWithoutChangingOtherCompatibleProviders(bool deepSeek)
+    {
+        using var client = new HttpClient(new Handler(async (request, ct) => {
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
+            if (deepSeek) Assert.Equal("disabled", body.RootElement.GetProperty("thinking").GetProperty("type").GetString());
+            else Assert.False(body.RootElement.TryGetProperty("thinking", out _));
+            return Response(OpenAiEnvelope("{\"summary\":\"Valid final JSON.\"}"));
+        })) { BaseAddress = new Uri("https://example.test/v1/") };
+        var provider = new OpenAICompatibleProvider(client, "test-model", deepSeek);
+        var result = await provider.Complete(new ProviderPrompt("Return JSON", "Evidence", 3000), Reconstruction.Schema, default);
+        Assert.Contains("Valid final JSON", result.Text); Assert.DoesNotContain("PRIVATE", result.Text);
+    }
 
     [Theory]
     [InlineData("openai")]

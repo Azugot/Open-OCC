@@ -54,3 +54,5 @@ Legacy imports remain inspectable. Active legacy jobs pause during migration. Re
 The model can still misread narrative meaning. Evidence, chronology, explicit uncertainty, and human approval remain necessary.
 
 Provider timeouts pause the saved stage with an explicit error; they are not mistaken for cancellation and retried repeatedly. Provider/connection errors do not trigger a JSON repair call. A validation repair does count toward the call budget, and budget exhaustion retains the last validation reason when available.
+
+Structured calls through the DeepSeek connector set `thinking.type=disabled` so the bounded output budget is available for the final JSON. The current API defaults to thinking mode; see [DeepSeek thinking mode](https://api-docs.deepseek.com/guides/thinking_mode/). Only final response content is consumed.
