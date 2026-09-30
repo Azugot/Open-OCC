@@ -12,6 +12,7 @@ import type { LucideIcon } from "lucide-react";
 import { api, post } from "./api";
 import type { Profiles, Workspace } from "./api";
 import "./engine.css";
+import ModelPicker from "./ModelPicker";
 
 type Entity = {
   id: string;
@@ -62,6 +63,8 @@ type Check = {
   explanation: string;
 };
 type SettingsValue = {
+  characterModel?: string | null;
+  directorModel?: string | null;
   characterProfile: string;
   directorProfile: string;
   maxBeats: number;
@@ -97,6 +100,7 @@ type Run = {
 type Engine = { checkpointId: string; world: World; runs: Run[] };
 type Tab = "live" | "graph" | "memory" | "author";
 const kinds = ["character", "object", "being", "place"];
+const supportsAgent = (p: Profiles["profiles"][number]) => p.agentSupported ?? ["fixture", "openai", "openai-compatible", "ollama", "lemonade"].includes(p.adapter);
 const colors: Record<string, string> = {
   character: "#668750",
   object: "#aa874d",
@@ -798,7 +802,8 @@ export default function StoryEngine({
                 ["directorProfile", "Director model"],
               ] as const
             ).map(([key, label]) => (
-              <label key={key}>
+              <div key={key}>
+              <label>
                 {label}
                 <select
                   disabled={readOnly}
@@ -807,6 +812,7 @@ export default function StoryEngine({
                     setSettings((s) => ({
                       ...(s ?? world!.settings),
                       [key]: e.target.value,
+                      [key === "characterProfile" ? "characterModel" : "directorModel"]: null,
                     }))
                   }
                 >
@@ -823,37 +829,27 @@ export default function StoryEngine({
                       value={p.id}
                       disabled={
                         !p.enabled ||
-                        !p.configured ||
-                        !(
-                          p.agentCapabilities?.supported ??
-                          p.agentCapabilities?.available ??
-                          [
-                            "fixture",
-                            "openai",
-                            "openai-compatible",
-                            "ollama",
-                          ].includes(p.adapter)
-                        )
+                        !(p.adapterConfigured ?? p.configured) || !supportsAgent(p)
                       }
                     >
                       {p.name} · {p.model}
                       {!p.configured ? " (not configured)" : ""}
-                      {!(
-                        p.agentCapabilities?.supported ??
-                        p.agentCapabilities?.available ??
-                        [
-                          "fixture",
-                          "openai",
-                          "openai-compatible",
-                          "ollama",
-                        ].includes(p.adapter)
-                      )
+                      {!supportsAgent(p)
                         ? " (narrator only)"
                         : ""}
                     </option>
                   ))}
                 </select>
               </label>
+              <ModelPicker
+                profile={profiles?.profiles.find(p => p.id === (settings ?? world!.settings)[key])}
+                value={(settings ?? world!.settings)[key === "characterProfile" ? "characterModel" : "directorModel"] || ""}
+                label={`${label} selection`}
+                defaultLabel="Use connector default model"
+                disabled={readOnly}
+                onChange={model => setSettings(s => ({ ...(s ?? world!.settings), [key === "characterProfile" ? "characterModel" : "directorModel"]: model }))}
+              />
+              </div>
             ))}
             {(
               [

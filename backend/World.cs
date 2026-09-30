@@ -1,11 +1,15 @@
 namespace Story;
 
-public record EngineSettings(string CharacterProfile = "fixture", string DirectorProfile = "fixture", int MaxBeats = 3, int MaxNpcs = 6)
+public record EngineSettings(string CharacterProfile = "fixture", string DirectorProfile = "fixture", int MaxBeats = 3, int MaxNpcs = 6,
+    string? CharacterModel = null, string? DirectorModel = null)
 {
     public void Validate()
     {
         if (MaxBeats is < 1 or > 5 || MaxNpcs is < 1 or > 10 || string.IsNullOrWhiteSpace(CharacterProfile) || string.IsNullOrWhiteSpace(DirectorProfile))
             throw new InvalidOperationException("Choose two profiles, 1–5 beats and 1–10 NPCs.");
+        foreach (var model in new[] { CharacterModel, DirectorModel })
+            if (model is not null && (model.Length > 200 || model.Any(char.IsControl)))
+                throw new InvalidOperationException("Model IDs must be at most 200 characters without control characters.");
     }
 }
 public record WorldEntity(string Id, string Name, string Kind, string LocationId, string Description, string[]? KnownTo = null);

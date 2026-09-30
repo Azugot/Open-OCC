@@ -1,5 +1,11 @@
 # Verification
 
+## September 29, 2026 model discovery
+
+- **112 .NET tests pass** with discovery, authenticated model-list requests, cache/refresh, modality filtering, invalid/oversized catalogs, cancellation, distinct task models, preserved connector defaults and captured imports. Lemonade agents use instruction-constrained JSON without unsupported JSON mode.
+- **Frontend production build and EF model consistency pass.** No database migration is required: task choices use existing settings and character/director model choices use checkpoint world settings.
+- **Disposable PostgreSQL HTTP smoke passes** via `tests/model-discovery-smoke.mjs`: automatic Lemonade/DeepSeek discovery, cache/refresh, unchanged profile defaults, task model persistence, saved selections after catalog changes, and separate character/director models through one Lemonade connector. The local transport provider uses scripted responses, not actual inference.
+
 ## September 29, 2026 combined storyteller merge
 
 - **102 .NET tests pass**, retaining provider/continuity and transcript reconstruction coverage alongside autonomous engine tests. Four merge regression tests verify graph/memory preservation across mechanics and canon corrections, narrator-only scene transitions, portable paused dice drafts, and imported fact ownership.

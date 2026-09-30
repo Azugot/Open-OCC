@@ -108,8 +108,8 @@ public static class StoryEngine
             w.Settings.Validate();
             run.Status = "running"; run.Error = null;
             await Save();
-            var character = characterOverride ?? await Provider(w.Settings.CharacterProfile);
-            var director = directorOverride ?? await Provider(w.Settings.DirectorProfile);
+            var character = characterOverride ?? await Provider(w.Settings.CharacterProfile, w.Settings.CharacterModel);
+            var director = directorOverride ?? await Provider(w.Settings.DirectorProfile, w.Settings.DirectorModel);
             var facts = await db.Facts.Where(x => x.BranchId == run.BranchId && x.ReviewStatus == "accepted" && x.EffectiveSequence <= cp.Sequence)
                 .OrderByDescending(x => x.EffectiveSequence).ToListAsync(ct);
             var allFacts = facts.Select(x => $"[{x.Kind}; confidence {x.Confidence}; known by {x.KnownByJson}] {x.Text}").ToArray();
@@ -203,12 +203,13 @@ public static class StoryEngine
             if (run.Status != "running") throw new OperationCanceledException("Turn was cancelled.");
             await CampaignService.CommitTurn(db, run, narration.Narrative, ct, draft.State, w);
 
-            async Task<IAgentProvider> Provider(string id)
+            async Task<IAgentProvider> Provider(string id, string? model)
             {
-                var profile = await db.Providers.SingleOrDefaultAsync(x => x.Id == id, ct);
+                var profile = await db.Providers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
                 if (id == "fixture") return new FixtureAgentProvider();
                 if (profile is null || !profile.Enabled) throw new InvalidOperationException("The selected provider is disabled or missing.");
                 if (profile.Adapter == "fixture") return new FixtureAgentProvider();
+                if (!string.IsNullOrWhiteSpace(model)) profile.Model = model.Trim();
                 return AgentProviderFactory.Create(profile, config);
             }
             async Task Save()

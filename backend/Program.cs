@@ -8,7 +8,9 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<StoryDb>(o => o.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")
     ?? "Host=localhost;Port=5432;Database=storyapp;Username=storyapp;Password=change-me"));
 builder.Services.AddHttpClient();
+builder.Services.AddHttpClient("model-discovery").ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
 builder.Services.AddSingleton<ProviderFactory>();
+builder.Services.AddSingleton<ModelDiscovery>();
 builder.Services.AddScoped<ProviderRouting>();
 builder.Services.AddScoped<ContinuityService>();
 builder.Services.AddHostedService<ImportWorker>();
@@ -136,7 +138,7 @@ app.MapPost("/api/branches/{id:guid}/turns", async (Guid id, TurnRequest request
     var world = StoryWorld.From(checkpoint);
     var profile = await db.Providers.SingleOrDefaultAsync(x => x.Id == world.Settings.DirectorProfile, ct);
     var run = new GenerationRun { BranchId = id, Action = request.Action.Trim(), ExpectedCheckpointId = checkpoint.Id,
-        Provider = world.Settings.DirectorProfile, Model = profile?.Model ?? "fixture-v1" };
+        Provider = world.Settings.DirectorProfile, Model = string.IsNullOrWhiteSpace(world.Settings.DirectorModel) ? profile?.Model ?? "fixture-v1" : world.Settings.DirectorModel.Trim() };
     branch.Revision++;
     db.GenerationRuns.Add(run); await db.SaveChangesAsync(ct);
     await StoryEngine.Execute(db, run, config, ct);
@@ -227,21 +229,30 @@ app.MapPost("/api/branches/{id:guid}/turns/stream", async (Guid id, TurnRequest 
 });
 app.MapGet("/api/providers", async (StoryDb db, ProviderRouting routing, IConfiguration config, CancellationToken ct) => new {
     tasks = await routing.Read(db, ct),
+    taskModels = await routing.ReadModels(db, ct),
     profiles = (await db.Providers.OrderBy(x => x.Name).ToListAsync()).Select(p => new { p.Id, p.Name, p.Adapter, p.Model, p.Enabled,
-        configured = routing.IsConfigured(p), capabilities = ProviderFactory.Capabilities(p.Adapter), agentCapabilities = AgentProviderFactory.Capabilities(p, config) }) });
+        configured = routing.IsConfigured(p), adapterConfigured = routing.IsConfigured(p),
+        agentSupported = p.Adapter is "fixture" or "openai" or "openai-compatible" or "ollama" or "lemonade",
+        capabilities = ProviderFactory.Capabilities(p.Adapter), agentCapabilities = AgentProviderFactory.Capabilities(p, config) }) });
+app.MapGet("/api/providers/{id}/models", async (string id, bool? refresh, StoryDb db, ModelDiscovery discovery, CancellationToken ct) =>
+{
+    var profile = await db.Providers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException();
+    return Results.Ok(await discovery.Read(profile, refresh == true, ct));
+});
 app.MapPut("/api/provider-routing", async (ProviderRoutes request, StoryDb db, ProviderRouting routing, CancellationToken ct) =>
 {
-    await routing.Save(db, new Dictionary<string, string> { ["narration"] = request.Narration, ["reconstruction"] = request.Reconstruction, ["memory"] = request.Memory }, ct);
+    await routing.Save(db, new Dictionary<string, string> { ["narration"] = request.Narration, ["reconstruction"] = request.Reconstruction, ["memory"] = request.Memory }, ct,
+        new Dictionary<string, string?> { ["narration"] = request.NarrationModel, ["reconstruction"] = request.ReconstructionModel, ["memory"] = request.MemoryModel });
     return Results.NoContent();
 });
 app.MapPut("/api/providers/{id}", async (string id, ProfileUpdate request, StoryDb db) =>
 {
     var profile = await db.Providers.SingleOrDefaultAsync(x => x.Id == id) ?? throw new KeyNotFoundException();
-    if (request.Model is null || request.Model.Length > 200) throw new InvalidOperationException("Provide a model name of at most 200 characters.");
+    if (request.Model is null || request.Model.Length > 200 || request.Model.Any(char.IsControl)) throw new InvalidOperationException("Provide a model name of at most 200 characters without control characters.");
     if (request.Adapter is not null)
     {
-        if (id is not ("character" or "director") || request.Adapter is not ("fixture" or "openai" or "openai-compatible" or "ollama"))
-            throw new InvalidOperationException("Role profiles support fixture, openai, openai-compatible or ollama.");
+        if (id is not ("character" or "director") || request.Adapter is not ("fixture" or "openai" or "openai-compatible" or "ollama" or "lemonade"))
+            throw new InvalidOperationException("Role profiles support fixture, openai, openai-compatible, ollama or lemonade.");
         profile.Adapter = request.Adapter;
     }
     profile.Model = request.Model.Trim(); profile.Enabled = request.Enabled;

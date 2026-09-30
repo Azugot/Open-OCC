@@ -27,6 +27,7 @@ import {
   streamTurn,
 } from "./api";
 import StoryEngine from "./StoryEngine";
+import ModelPicker from "./ModelPicker";
 import ImportReview from "./ImportReview";
 import type {
   Branch,
@@ -1511,8 +1512,8 @@ export default function App() {
                 <div className="panel">
                   <h2>Task routing</h2>
                   {Object.entries(profiles.tasks).map(([task, profile]) => (
-                    <label key={task}>
-                      {task}
+                    <div key={task}>
+                    <label>{task} connector
                       <select
                         value={profile}
                         onChange={(e) =>
@@ -1522,6 +1523,7 @@ export default function App() {
                               ...profiles.tasks,
                               [task]: e.target.value,
                             },
+                            taskModels: { ...profiles.taskModels, [task]: "" },
                           })
                         }
                       >
@@ -1532,6 +1534,15 @@ export default function App() {
                         ))}
                       </select>
                     </label>
+                    <ModelPicker
+                      profile={profiles.profiles.find(p => p.id === profile)}
+                      value={profiles.taskModels?.[task] || ""}
+                      disabled={busy}
+                      label={`${task} model`}
+                      defaultLabel={`Use connector default${profiles.profiles.find(p => p.id === profile)?.model ? ` · ${profiles.profiles.find(p => p.id === profile)!.model}` : ""}`}
+                      onChange={model => setProfiles({ ...profiles, taskModels: { ...profiles.taskModels, [task]: model } })}
+                    />
+                    </div>
                   ))}
                   <p>
                     Choose character and director profiles in each campaign's
@@ -1546,7 +1557,10 @@ export default function App() {
                       void run(async () => {
                         await api("/provider-routing", {
                           method: "PUT",
-                          body: JSON.stringify(profiles.tasks),
+                          body: JSON.stringify({ ...profiles.tasks,
+                            narrationModel: profiles.taskModels?.narration || "",
+                            reconstructionModel: profiles.taskModels?.reconstruction || "",
+                            memoryModel: profiles.taskModels?.memory || "" }),
                         });
                         setNotice("Provider routing saved.");
                       })
@@ -1613,26 +1627,26 @@ export default function App() {
                             OpenAI-compatible
                           </option>
                           <option value="ollama">Ollama</option>
+                          <option value="lemonade">Lemonade</option>
                         </select>
                       </label>
                     )}
-                    <label>
-                      Model
-                      <input
+                    <ModelPicker
+                        profile={p}
+                        label="Default model"
+                        disabled={busy}
                         value={p.model}
-                        maxLength={200}
-                        onChange={(e) =>
+                        onChange={(model) =>
                           setProfiles({
                             ...profiles,
                             profiles: profiles.profiles.map((x) =>
                               x.id === p.id
-                                ? { ...x, model: e.target.value }
+                                  ? { ...x, model }
                                 : x,
                             ),
                           })
                         }
                       />
-                    </label>
                     <label className="check-label">
                       <input
                         type="checkbox"

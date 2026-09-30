@@ -4,6 +4,8 @@ A private story workspace built with React/TypeScript/Vite, ASP.NET Core 10, EF 
 
 The autonomous storyteller adds independent character sessions, a master director, an ordered Live room, server-generated d20 checks, historical world graphs, and editable short/long memories. Open **Live world** to inspect events, graph evidence, and spoiler-gated character state. Player turns use this engine by default; the optional narrator-only mode preserves streamed narration and continuity extraction.
 
+Lemonade and DeepSeek model lists are detected automatically in provider settings. You can select different models for each task or for character/director roles while sharing one connector. Manual IDs and saved choices remain available when discovery is unavailable.
+
 ## Start with Docker
 
 Requires Docker Desktop (Linux containers) or Docker Engine with Compose. From the repository root:

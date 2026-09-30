@@ -1142,3 +1142,7 @@ input[type="checkbox"] {
     padding: 16px;
   }
 }
+.model-picker { min-width: 0; margin: 0 0 1rem; }
+.model-discovery-status { display: flex; align-items: center; gap: .7rem; justify-content: space-between; margin: -.25rem 0 .65rem; }
+.model-discovery-status small { flex: 1; }
+.model-discovery-status button { font-size: .78rem; flex-shrink: 0; }

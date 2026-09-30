@@ -249,17 +249,17 @@ public sealed class ProviderFactory(IHttpClientFactory clients, IConfiguration c
         catch (InvalidOperationException) { return false; }
     }
 
-    private (string BaseUrl, string? Key) Configuration(ProviderProfile profile)
+    public (string BaseUrl, string? Key) Configuration(ProviderProfile profile)
     {
         if (!Regex.IsMatch(profile.Id, "^[A-Za-z0-9_-]{1,100}$")) throw new InvalidOperationException("Invalid provider profile ID.");
         if (profile.Adapter is not ("openai" or "openai-compatible" or "anthropic" or "ollama" or "lemonade")) throw new InvalidOperationException("Unsupported provider adapter.");
         static string? Set(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
         var prefix = profile.Id.ToUpperInvariant().Replace('-', '_');
         var vendor = profile.Id is "character" or "director" ? profile.Adapter switch
-        { "openai" => "OPENAI", "ollama" => "OLLAMA", _ => null } : null;
+        { "openai" => "OPENAI", "ollama" => "OLLAMA", "lemonade" => "LEMONADE", _ => null } : null;
         var key = Set(config[$"{prefix}_API_KEY"]) ?? (vendor is null ? null : Set(config[$"{vendor}_API_KEY"]));
         var baseUrl = Set(config[$"{prefix}_BASE_URL"]) ?? (vendor is null ? null : Set(config[$"{vendor}_BASE_URL"])) ?? profile.Adapter switch
-        { "openai" => "https://api.openai.com/v1", "anthropic" => "https://api.anthropic.com/v1", "ollama" => "http://host.docker.internal:11434", "lemonade" => "http://host.docker.internal:13305/v1", _ => "" };
+        { "openai" => "https://api.openai.com/v1", "anthropic" => "https://api.anthropic.com/v1", "ollama" => "http://host.docker.internal:11434", "lemonade" => "http://host.docker.internal:13305/v1", _ => profile.Id == "deepseek" ? "https://api.deepseek.com" : "" };
         if (profile.Adapter is not ("ollama" or "lemonade") && key is null) throw new InvalidOperationException($"Configure {prefix}_API_KEY on the server.");
         if (key is not null && (key.Contains('\r') || key.Contains('\n'))) throw new InvalidOperationException($"{prefix}_API_KEY is invalid.");
         if (!Uri.TryCreate(baseUrl.TrimEnd('/') + "/", UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || uri.UserInfo.Length > 0 || uri.Query.Length > 0 || uri.Fragment.Length > 0)
@@ -334,17 +334,17 @@ public static class AgentProviderFactory
         if (string.IsNullOrWhiteSpace(profile.Model) || profile.Model.Length > 200)
             throw new InvalidOperationException("Configure a model name for this profile.");
         if (profile.Adapter == "fixture") return (null, null);
-        if (profile.Adapter is not ("openai" or "openai-compatible" or "ollama"))
-            throw new InvalidOperationException("This profile adapter is unsupported. Choose openai, openai-compatible, ollama, or fixture.");
+        if (profile.Adapter is not ("openai" or "openai-compatible" or "ollama" or "lemonade"))
+            throw new InvalidOperationException("This profile adapter is unsupported. Choose openai, openai-compatible, ollama, lemonade, or fixture.");
         var prefix = profileId.ToUpperInvariant().Replace('-', '_');
         // Only the two role profiles may share vendor credentials/endpoints.
         // Compatible endpoints require an explicit role configuration: guessing a
         // vendor could send a model/context or credential to the wrong service.
         var vendorPrefix = profileId is "character" or "director" ? profile.Adapter switch
-        { "openai" => "OPENAI", "ollama" => "OLLAMA", _ => null } : null;
+        { "openai" => "OPENAI", "ollama" => "OLLAMA", "lemonade" => "LEMONADE", _ => null } : null;
         static string? Configured(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
         var key = Configured(config[$"{prefix}_API_KEY"]) ?? (vendorPrefix is null ? null : Configured(config[$"{vendorPrefix}_API_KEY"]));
-        if (profile.Adapter != "ollama" && string.IsNullOrWhiteSpace(key))
+        if (profile.Adapter is not ("ollama" or "lemonade") && string.IsNullOrWhiteSpace(key))
             throw new InvalidOperationException($"Configure {prefix}_API_KEY on the server.");
         if (key is not null && (key.Contains('\r') || key.Contains('\n')))
             throw new InvalidOperationException($"{prefix}_API_KEY is invalid.");
@@ -352,12 +352,15 @@ public static class AgentProviderFactory
         {
             "openai" => "https://api.openai.com/v1",
             "ollama" => "http://host.docker.internal:11434",
-            _ => ""
+            "lemonade" => "http://host.docker.internal:13305/v1",
+            _ => profile.Id == "deepseek" ? "https://api.deepseek.com" : ""
         });
         if (!Uri.TryCreate(baseUrl.TrimEnd('/') + "/", UriKind.Absolute, out var uri) ||
             uri.Scheme is not ("https" or "http") || !string.IsNullOrEmpty(uri.UserInfo) ||
             !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
             throw new InvalidOperationException($"Configure a valid HTTP(S) {prefix}_BASE_URL without credentials, query, or fragment.");
+        if (profile.Adapter == "lemonade" && !uri.AbsolutePath.TrimEnd('/').EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+            uri = new Uri(uri.AbsoluteUri.TrimEnd('/') + "/v1/");
         var path = profile.Adapter == "ollama" ? (uri.AbsolutePath.TrimEnd('/').EndsWith("/api", StringComparison.OrdinalIgnoreCase) ? "chat" : "api/chat") : "chat/completions";
         return (new Uri(uri, path), key);
     }
@@ -383,6 +386,7 @@ internal sealed class RemoteAgentProvider(string adapter, string model, Uri endp
         {
             "ollama" => new { model, messages, stream = false, format = "json", options = new { num_predict = 4096 } },
             "openai" => new { model, messages, stream = false, response_format = new { type = "json_object" }, max_completion_tokens = 4096 },
+            "lemonade" => new { model, messages, stream = false, max_tokens = 4096, enable_thinking = false },
             _ => new { model, messages, stream = false, response_format = new { type = "json_object" }, max_tokens = 4096 }
         };
         using var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint)

@@ -19,12 +19,19 @@ public static class EngineApi
             return Results.Ok(new { checkpointId = checkpoint.Id, world = StoryWorld.From(checkpoint), runs = runs.Select(x => new
                 { x.Id, x.Action, x.Status, x.Error, draft = x.DraftJson == "{}" ? null : Json.Read<TurnDraft>(x.DraftJson) }) });
         });
-        app.MapPost("/api/branches/{id:guid}/engine/settings", async (Guid id, SettingsUpdate request, StoryDb db, CancellationToken ct) =>
+        app.MapPost("/api/branches/{id:guid}/engine/settings", async (Guid id, SettingsUpdate request, StoryDb db, IConfiguration config, CancellationToken ct) =>
         {
             if (request.Settings is null) throw new InvalidOperationException("Settings are required.");
             request.Settings.Validate();
-            foreach (var profileId in new[] { request.Settings.CharacterProfile, request.Settings.DirectorProfile })
-                if (profileId != "fixture" && !await db.Providers.AnyAsync(x => x.Id == profileId && x.Enabled, ct)) throw new InvalidOperationException("Select an enabled provider profile.");
+            foreach (var (profileId, model) in new[] { (request.Settings.CharacterProfile, request.Settings.CharacterModel), (request.Settings.DirectorProfile, request.Settings.DirectorModel) })
+            {
+                if (profileId == "fixture") continue;
+                var profile = await db.Providers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == profileId && x.Enabled, ct)
+                    ?? throw new InvalidOperationException("Select an enabled provider profile.");
+                if (!string.IsNullOrWhiteSpace(model)) profile.Model = model.Trim();
+                var capabilities = AgentProviderFactory.Capabilities(profile, config);
+                if (!capabilities.Available) throw new InvalidOperationException(capabilities.Note);
+            }
             await Edit(db, id, request.ExpectedCheckpointId, "Engine settings updated", w => w.Settings = request.Settings, ct);
             return Results.NoContent();
         });

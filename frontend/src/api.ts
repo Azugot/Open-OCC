@@ -233,6 +233,7 @@ export type RetrievalHit = {
 };
 export type Profiles = {
   tasks: { narration: string; reconstruction: string; memory: string };
+  taskModels?: Record<string, string>;
   profiles: {
     id: string;
     name: string;
@@ -240,6 +241,8 @@ export type Profiles = {
     model: string;
     enabled: boolean;
     configured: boolean;
+    adapterConfigured?: boolean;
+    agentSupported?: boolean;
     capabilities: { available: boolean; note: string };
     agentCapabilities?: {
       available?: boolean;
