@@ -401,6 +401,12 @@ main {
   border: 1px solid #e1e5da;
   transition: transform 0.2s;
 }
+.campaign-card-container { display: flex; flex-direction: column; min-width: 0; }
+.campaign-card-container .campaign-card { width: 100%; flex: 1; }
+.delete-story-button { margin-top: 8px; align-self: flex-end; color: #bd533d; font-size: 12px; }
+.delete-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; }
+.delete-actions .danger { background: #ac3d30; color: white; border-color: #ac3d30; }
+.delete-error { color: #bd533d; }
 .campaign-card:hover {
   transform: translateY(-3px);
   background: #fff;

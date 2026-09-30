@@ -9,6 +9,7 @@ public record ImportClaim(string Key, string Category, string Text, string Subje
 public record ReconstructionIssue(string Code, string Text, bool Blocking, int[] EvidenceOrdinals);
 public record ResumeProposal(StoryState? State, int[] EvidenceOrdinals, string LatestAction, bool ReplyPending, string[] Missing);
 public record AgentResult(ImportClaim[] Claims, ReconstructionIssue[] Issues, ResumeProposal? Resume, string Summary, string[] ResolvedIssueCodes);
+public record ReviewWindow(Guid[] ProposalIds, int[] EvidenceOrdinals, bool ReviewScene);
 public record ImportOptions(int InputCharacterLimit = 24000, int OutputTokenLimit = 3000, int MaxCalls = 100);
 public record RetryImport(string? Provider = null, string? Model = null, int? MaxCalls = null, int? InputCharacterLimit = null, int? OutputTokenLimit = null);
 public record EditProposal(int Revision, ImportClaim Claim, bool Excluded);
@@ -33,7 +34,17 @@ public static class Reconstruction
         "Inventory: subject=item, amount=absolute current count. Skill: subject=ability, value=current rank/progress. " +
         "Thread: subject=title, value=goal/promise/deadline/mystery/conflict/thread, target=active/resolved, amount=importance 1..5. " +
         "Use empty strings/arrays and amount=0 for irrelevant fields. Resume is the complete scene state or null if not recoverable; list gaps explicitly. " +
-        "Return one JSON object matching the schema. At most 16 claims per response; preserve material information through concise consolidation.";
+        "Evidence ordinal numbers are zero-based citation IDs, not independent scenes. Read adjacent passages as continuous text, respecting speaker/heading changes. " +
+        "Return one JSON object matching the schema. At most 16 claims per response; preserve material information through concise consolidation. " +
+        "Use only the enum values in the schema. Never put prose in amount or confidence. Include every required field. " +
+        "Example shape (replace the example with supported claims and supplied ordinals): " +
+        "{\"claims\":[{\"key\":\"character:mara\",\"category\":\"character\",\"text\":\"Mara is a navigator.\",\"subject\":\"Mara\",\"target\":\"\",\"value\":\"\",\"amount\":0,\"kind\":\"fact\",\"visibility\":\"public\",\"knownBy\":[],\"confidence\":0.9,\"evidenceOrdinals\":[0],\"disposition\":\"current\",\"supersedesKeys\":[]}],\"issues\":[],\"resume\":null,\"summary\":\"Mara prepares to sail.\",\"resolvedIssueCodes\":[]}";
+
+    private static int EvidenceBudget(ImportJob job) => Math.Max(1000,
+        (job.InputCharacterLimit - Instructions.Length - Schema.GetRawText().Length - 1000) * 2 / 3);
+    private static int ContextBudget(ImportJob job) => job.InputCharacterLimit - Instructions.Length - Schema.GetRawText().Length -
+        (job.ResumeJson?.Length ?? 4) - (job.Summary?.Length ?? 4) - 1700;
+    private static int CurrentEvidenceBudget(ImportJob job) => Math.Min(EvidenceBudget(job), ContextBudget(job));
 
     public static void ValidateOptions(ImportOptions options)
     {
@@ -49,19 +60,22 @@ public static class Reconstruction
         {
             var source = await db.Sources.SingleAsync(x => x.Id == job.SourceId, ct);
             var entries = ImportParser.Parse(source.FileName, source.Bytes);
-            // Split only normalized text. The immutable original remains available for download.
-            var max = Math.Min(16000, job.InputCharacterLimit / 4);
-            var segments = entries.SelectMany(entry => Enumerable.Range(0, (entry.Text.Length + max - 1) / max)
-                .Select(i => entry with { Text = entry.Text.Substring(i * max, Math.Min(max, entry.Text.Length - i * max)) })).ToArray();
+            // Keep paragraphs/turns intact where possible; sections are continuous reading windows.
+            var budget = EvidenceBudget(job);
+            // Small citation units do not limit reading windows. Reserve room for
+            // escaped control characters as well as overlap and evidence paging.
+            var max = Math.Min(2000, Math.Max(200, (budget - 300) / 6));
+            var segments = ImportContext.Passages(entries, max).ToArray();
             if (segments.Length > 4000) throw new InvalidOperationException("Normalization exceeds 4,000 passages. Split the source into smaller files.");
             var start = 0; var chars = 0; var section = 0;
             for (var i = 0; i < segments.Length; i++)
             {
                 var s = segments[i];
-                if (i > start && (chars + s.Text.Length + 120 > max || s.Section == "heading" && chars > max / 2))
+                var size = ImportContext.Evidence([new ImportSegment { Ordinal = i, Speaker = s.Speaker, Text = s.Text, Section = s.Section, Timestamp = s.Timestamp, Artifact = s.Artifact }]).Length;
+                if (i > start && chars + size > budget)
                 { db.ImportSections.Add(new ImportSection { JobId = job.Id, Ordinal = section++, Start = start, End = i }); start = i; chars = 0; }
                 db.Segments.Add(new ImportSegment { JobId = job.Id, Ordinal = i, Speaker = s.Speaker, Text = s.Text, Section = s.Section, Timestamp = s.Timestamp, Artifact = s.Artifact });
-                chars += s.Text.Length + 120;
+                chars += size;
             }
             db.ImportSections.Add(new ImportSection { JobId = job.Id, Ordinal = section, Start = start, End = segments.Length });
             job.Total = segments.Length; job.Stage = "extract"; job.StageCursor = 0; job.ProposalRevision++;
@@ -73,30 +87,64 @@ public static class Reconstruction
         var current = await db.ImportProposals.Where(x => x.JobId == job.Id && x.Current).OrderBy(x => x.Key).ToListAsync(ct);
         ImportProposal[] page = [];
         ImportSegment[] evidence;
+        int? nextSection = null;
+        string readingContext = "";
+        Guid? repairIssueId = null;
         var mode = job.Stage;
         if (mode == "extract")
         {
             var section = await db.ImportSections.SingleOrDefaultAsync(x => x.JobId == job.Id && x.Ordinal == job.StageCursor, ct);
             if (section is null) { await ChangeStage(db, job, "reconcile", current, ct); return; }
-            evidence = await db.Segments.Where(x => x.JobId == job.Id && x.Ordinal >= section.Start && x.Ordinal < section.End).OrderBy(x => x.Ordinal).ToArrayAsync(ct);
+            // Adapt the next continuous window to the actual evolving scene/summary.
+            // Processed is a passage cursor, so a stored section can span several calls.
+            var unread = await db.Segments.Where(x => x.JobId == job.Id && x.Ordinal >= job.Processed).OrderBy(x => x.Ordinal).ToArrayAsync(ct);
+            var windowRows = new List<ImportSegment>();
+            foreach (var row in unread)
+            {
+                if (ImportContext.Evidence(windowRows.Append(row)).Length > CurrentEvidenceBudget(job)) break;
+                windowRows.Add(row);
+            }
+            if (windowRows.Count == 0) throw new InvalidOperationException("The scene and next citation exceed this input budget. Increase the input limit, or re-read the original with smaller citation passages.");
+            evidence = windowRows.ToArray();
+            var endingSection = await db.ImportSections.SingleAsync(x => x.JobId == job.Id && x.Start <= evidence.Last().Ordinal && x.End > evidence.Last().Ordinal, ct);
+            nextSection = endingSection.End == evidence.Last().Ordinal + 1 ? endingSection.Ordinal + 1 : endingSection.Ordinal;
+            var overlapBudget = Math.Clamp(job.InputCharacterLimit - Instructions.Length - Schema.GetRawText().Length -
+                ImportContext.Evidence(evidence).Length - (job.ResumeJson?.Length ?? 4) - (job.Summary?.Length ?? 4) - 2000, 0, 2000);
+            var firstNewOrdinal = windowRows[0].Ordinal;
+            var before = await db.Segments.Where(x => x.JobId == job.Id && x.Ordinal < firstNewOrdinal).OrderByDescending(x => x.Ordinal).Take(20).ToArrayAsync(ct);
+            var nearby = new List<ImportSegment>();
+            foreach (var row in before)
+            { if (ImportContext.Evidence(nearby.Append(row)).Length > overlapBudget) break; nearby.Add(row); }
+            var heading = await db.Segments.Where(x => x.JobId == job.Id && x.Ordinal < firstNewOrdinal && x.Section == "heading").OrderByDescending(x => x.Ordinal).FirstOrDefaultAsync(ct);
+            if (heading is not null && !nearby.Any(x => x.Ordinal == heading.Ordinal) && ImportContext.Evidence(nearby.Append(heading)).Length <= overlapBudget) nearby.Add(heading);
+            readingContext = $"NEW PASSAGES: {firstNewOrdinal}–{evidence.Last().Ordinal}. Earlier passages are overlap for continuity; avoid duplicating unchanged claims.\n";
+            evidence = nearby.Concat(evidence).OrderBy(x => x.Ordinal).ToArray();
         }
         else if (mode is "reconcile" or "audit")
         {
-            var plan = await db.ImportResults.SingleOrDefaultAsync(x => x.JobId == job.Id && x.Stage == mode + "-plan", ct);
-            var ids = plan is null ? [] : Json.Read<Guid[]>(plan.ResultJson);
-            var pageIds = ids.Skip(job.StageCursor).Take(4).ToArray();
-            if (pageIds.Length == 0 && (job.StageCursor > 0 || mode == "reconcile"))
+            var windows = await db.ImportResults.SingleOrDefaultAsync(x => x.JobId == job.Id && x.Stage == mode + "-windows", ct);
+            if (windows is null)
+            {
+                var plan = await db.ImportResults.SingleOrDefaultAsync(x => x.JobId == job.Id && x.Stage == mode + "-plan", ct);
+                var ids = plan is null ? [] : Json.Read<Guid[]>(plan.ResultJson).Skip(job.StageCursor).ToArray();
+                var planned = await db.ImportProposals.Where(x => ids.Contains(x.Id)).OrderBy(x => x.Key).ToArrayAsync(ct);
+                var sourceRows = await db.Segments.Where(x => x.JobId == job.Id).OrderBy(x => x.Ordinal).ToArrayAsync(ct);
+                var scene = mode == "audit" && job.ResumeJson is not null ? Json.Read<ResumeProposal>(job.ResumeJson) : null;
+                db.ImportResults.Add(new ImportStageResult { JobId = job.Id, Stage = mode + "-windows", Ordinal = 0,
+                    ResultJson = Json.Write(ReviewWindows(planned, sourceRows, scene, ContextBudget(job))), Provider = job.Provider, Model = job.Model });
+                job.StageCursor = 0; job.ProposalRevision++; await db.SaveChangesAsync(ct); return;
+            }
+            var window = Json.Read<ReviewWindow[]>(windows.ResultJson).ElementAtOrDefault(job.StageCursor);
+            if (window is null)
             {
                 if (mode == "reconcile") await ChangeStage(db, job, "resume", current, ct);
                 else await ChangeStage(db, job, "repair", current, ct);
                 return;
             }
-            page = await db.ImportProposals.Where(x => pageIds.Contains(x.Id)).ToArrayAsync(ct);
-            var ordinals = page.SelectMany(x => Json.Read<ImportClaim>(x.ContentJson).EvidenceOrdinals)
-                .Concat(job.ResumeJson is null ? [] : Json.Read<ResumeProposal>(job.ResumeJson).EvidenceOrdinals).Distinct().ToArray();
-            evidence = await EvidenceWithinBudget(db, job, ordinals, ct);
-            // Large citations are paged by the normalization step; do not silently drop evidence.
-            if (ordinals.Except(evidence.Select(x => x.Ordinal)).Any()) throw new InvalidOperationException("Evidence exceeds this input budget. Retry with a larger input limit or reanalyze with smaller sections.");
+            page = await db.ImportProposals.Where(x => window.ProposalIds.Contains(x.Id)).ToArrayAsync(ct);
+            evidence = await EvidenceWithinBudget(db, job, window.EvidenceOrdinals, ct, ContextBudget(job) - Json.Write(page.Select(x => Json.Read<ImportClaim>(x.ContentJson))).Length);
+            if (window.EvidenceOrdinals.Except(evidence.Select(x => x.Ordinal)).Any()) throw new InvalidOperationException("This saved evidence window exceeds the new input budget. Increase the input limit before resuming.");
+            readingContext = "This is one evidence window for the ledger or ending. Other citations are reviewed in separate windows; absence here is not evidence of a contradiction.\n";
         }
         else if (mode is "resume" or "repair")
         {
@@ -104,18 +152,24 @@ public static class Reconstruction
             {
                 var unresolved = await db.ImportIssues.Where(x => x.JobId == job.Id && x.Resolution == "").ToListAsync(ct);
                 if (unresolved.Count == 0) { await Finish(db, job, ct); await db.SaveChangesAsync(ct); return; }
-                var ids = unresolved.SelectMany(x => Json.Read<int[]>(x.EvidenceJson)).Distinct().ToArray();
+                // The repair pass is one targeted attempt. All other issues remain
+                // inspectable for human review rather than filling an unbounded prompt.
+                var target = unresolved.OrderByDescending(x => x.Blocking).ThenBy(x => x.Code).First();
+                repairIssueId = target.Id;
+                var ids = Json.Read<int[]>(target.EvidenceJson).Distinct().ToArray();
                 evidence = await EvidenceWithinBudget(db, job, ids, ct);
+                if (ids.Except(evidence.Select(x => x.Ordinal)).Any())
+                { await Finish(db, job, ct); await db.SaveChangesAsync(ct); return; }
             }
             else evidence = await TailEvidence(db, job, ct);
         }
         else throw new InvalidOperationException("Unknown reconstruction stage.");
 
         var allowed = evidence.Select(x => x.Ordinal).ToHashSet();
-        var evidenceJson = Json.Write(evidence.Select(x => new { x.Ordinal, x.Speaker, x.Text, x.Section, x.Timestamp, x.Artifact }));
-        var issueRows = await db.ImportIssues.Where(x => x.JobId == job.Id && x.Resolution == "").OrderBy(x => x.Code).ToListAsync(ct);
+        var evidenceJson = ImportContext.Evidence(evidence);
+        var issueRows = mode == "repair" ? await db.ImportIssues.Where(x => x.JobId == job.Id && x.Id == repairIssueId).ToListAsync(ct) : [];
         var issueText = Json.Write(issueRows.Select(x => new { x.Code, x.Text, x.EvidenceJson, x.Blocking }));
-        var context = $"STAGE: {mode}\nPRIOR SCENE: {job.ResumeJson ?? "null"}\nPRIOR SUMMARY: {job.Summary ?? "None"}\n";
+        var context = $"STAGE: {mode}\n{readingContext}PRIOR SCENE: {job.ResumeJson ?? "null"}\nPRIOR SUMMARY: {job.Summary ?? "None"}\n";
         context += mode switch {
             "extract" => "Read this next section. Update the evolving ledger and scene only with supported changes. Flag uncertainty; omit formatting artifacts.\n",
             "reconcile" => "Reconcile this ledger page with nearby ledger entries. Consolidate duplicates and explicit corrections using stable keys. Return resume=null.\n",
@@ -125,7 +179,7 @@ public static class Reconstruction
         if (mode == "repair") context += "ISSUES:\n" + issueText + "\n";
         context += "LEDGER PAGE:\n" + Json.Write(page.Select(x => Json.Read<ImportClaim>(x.ContentJson))) + "\n";
         context += "EVIDENCE:\n" + evidenceJson + "\n";
-        var remaining = job.InputCharacterLimit - Instructions.Length - Schema.GetRawText().Length - context.Length - 300;
+        var remaining = job.InputCharacterLimit - Instructions.Length - Schema.GetRawText().Length - context.Length - 1000;
         var ledger = new List<ImportClaim>();
         var search = string.Join(' ', evidence.Select(x => x.Text));
         foreach (var row in current.OrderByDescending(x => search.Contains(Json.Read<ImportClaim>(x.ContentJson).Subject, StringComparison.OrdinalIgnoreCase)))
@@ -139,15 +193,23 @@ public static class Reconstruction
             throw new InvalidOperationException("This stage exceeds the input budget. Increase the input limit before retrying.");
 
         AgentResult? result = null; ProviderCompletion? completion = null;
+        string? validationError = null;
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            if (job.Calls >= job.MaxCalls) throw new InvalidOperationException("Import call budget exhausted. Increase the budget to resume.");
+            if (job.Calls >= job.MaxCalls) throw new InvalidOperationException("Import call budget exhausted. Increase the budget to resume." +
+                (validationError is null ? "" : " Last validation error: " + validationError));
             job.Calls++; await db.SaveChangesAsync(ct); // Count attempts, including calls interrupted before result persistence.
+            var repair = prompt with { Input = prompt.Input + "\nVALIDATION REPAIR: " + validationError +
+                    "\nRegenerate this stage as complete schema-valid JSON. Use only supplied evidence ordinals, and keep the response concise enough to finish within the output limit." };
+            if (attempt > 0 && repair.Instructions.Length + repair.Input.Length + Schema.GetRawText().Length > job.InputCharacterLimit)
+                throw new InvalidOperationException("The repair exceeds the input budget. Increase the input limit before retrying.");
+            try { completion = await provider.Complete(attempt == 0 ? prompt : repair, Schema, ct); }
+            catch (OperationCanceledException e) when (!ct.IsCancellationRequested)
+            { throw new InvalidOperationException("The reconstruction model request timed out. The saved stage can be resumed with a faster model or a lower output token limit.", e); }
+            job.InputTokens = (job.InputTokens ?? 0) + (completion.InputTokens ?? 0);
+            job.OutputTokens = (job.OutputTokens ?? 0) + (completion.OutputTokens ?? 0);
             try
             {
-                completion = await provider.Complete(attempt == 0 ? prompt : prompt with { Instructions = prompt.Instructions + "\nThe previous response was invalid. Return complete schema-valid JSON with valid evidence ordinals." }, Schema, ct);
-                job.InputTokens = (job.InputTokens ?? 0) + (completion.InputTokens ?? 0);
-                job.OutputTokens = (job.OutputTokens ?? 0) + (completion.OutputTokens ?? 0);
                 result = Json.Read<AgentResult>(UnwrapJson(completion.Text));
                 ValidateResult(result, allowed, current.Select(x => x.Key).ToHashSet());
                 if (mode == "resume" && result.Resume is null) throw new InvalidOperationException("The final scene was omitted.");
@@ -156,8 +218,11 @@ public static class Reconstruction
             }
             catch (Exception e) when (e is JsonException or InvalidOperationException)
             {
+                validationError = e is JsonException jsonError ?
+                    "Invalid JSON or field type" + (jsonError.Path is { Length: < 200 } path ? " at " + path : "") +
+                    ". Escape newlines inside strings as \\n, and include every required field. If the response was cut off, increase the output token limit." : e.Message;
                 await db.SaveChangesAsync(ct);
-                if (attempt == 1) throw new InvalidOperationException("Model output failed validation after one repair. Retry this stage or choose another reconstruction model.", e);
+                if (attempt == 1) throw new InvalidOperationException($"Model output failed validation in {mode} after one repair: {validationError} Resume this stage with adjusted limits or another reconstruction model.", e);
             }
         }
         ct.ThrowIfCancellationRequested();
@@ -181,14 +246,13 @@ public static class Reconstruction
         if (result.Resume is not null && mode != "reconcile")
         { job.ResumeJson = Json.Write(result.Resume); job.ProposedStateJson = result.Resume.State is null ? null : Json.Write(result.Resume.State); }
         if (!string.IsNullOrWhiteSpace(result.Summary) && mode is "extract" or "resume" or "repair") job.Summary = result.Summary;
-        db.ImportResults.Add(new ImportStageResult { JobId = job.Id, Stage = mode, Ordinal = job.StageCursor, ResultJson = Json.Write(result), Provider = job.Provider, Model = job.Model, InputTokens = completion?.InputTokens, OutputTokens = completion?.OutputTokens });
+        db.ImportResults.Add(new ImportStageResult { JobId = job.Id, Stage = mode is "reconcile" or "audit" ? mode + "-window" : mode, Ordinal = mode == "extract" ? job.Processed : job.StageCursor, ResultJson = Json.Write(result), Provider = job.Provider, Model = job.Model, InputTokens = completion?.InputTokens, OutputTokens = completion?.OutputTokens });
         job.ProposalRevision++;
         if (mode == "extract")
         {
-            var section = await db.ImportSections.SingleAsync(x => x.JobId == job.Id && x.Ordinal == job.StageCursor, ct);
-            job.Processed = section.End; job.StageCursor++;
+            job.Processed = evidence.Max(x => x.Ordinal) + 1; job.StageCursor = nextSection!.Value;
         }
-        else if (mode is "reconcile" or "audit") job.StageCursor += Math.Max(1, page.Length);
+        else if (mode is "reconcile" or "audit") job.StageCursor++;
         else if (mode == "resume") { job.Stage = "audit"; job.StageCursor = 0; await SavePlan(db, job, "audit", ct); }
         else if (mode == "repair") await Finish(db, job, ct);
         await db.SaveChangesAsync(ct);
@@ -200,6 +264,36 @@ public static class Reconstruction
         if (stage is "reconcile" or "audit")
             db.ImportResults.Add(new ImportStageResult { JobId = job.Id, Stage = stage + "-plan", Ordinal = 0, ResultJson = Json.Write(items.Where(x => x.Current).Select(x => x.Id).ToArray()), Provider = job.Provider, Model = job.Model });
         await db.SaveChangesAsync(ct);
+    }
+    public static ReviewWindow[] ReviewWindows(ImportProposal[] proposals, ImportSegment[] rows, ResumeProposal? scene, int budget)
+    {
+        var byOrdinal = rows.ToDictionary(x => x.Ordinal);
+        var byProposal = proposals.ToDictionary(x => x.Id, x => Json.Read<ImportClaim>(x.ContentJson));
+        var windows = new List<ReviewWindow>();
+        int Size(Guid[] ids, IEnumerable<int> ordinals) => ImportContext.Evidence(ordinals.Select(x => byOrdinal[x])).Length + Json.Write(ids.Select(x => byProposal[x])).Length;
+        void Add(Guid[] ids, int[] ordinals, bool reviewScene)
+        {
+            var batch = new List<int>();
+            foreach (var ordinal in ordinals.Distinct().Order())
+            {
+                if (!byOrdinal.TryGetValue(ordinal, out var row)) throw new InvalidOperationException("A review citation no longer exists.");
+                if (Size(ids, [ordinal]) > budget) throw new InvalidOperationException("A claim and its citation exceed this reading budget. Increase the input limit or re-read the original to create smaller citation passages.");
+                if (Size(ids, batch.Append(ordinal)) > budget)
+                { windows.Add(new(ids, batch.ToArray(), reviewScene)); batch.Clear(); }
+                batch.Add(ordinal);
+            }
+            var candidate = new ReviewWindow(ids, batch.ToArray(), reviewScene);
+            if (windows.LastOrDefault() is { } last && !last.ReviewScene && !reviewScene && last.ProposalIds.Length + ids.Length <= 4)
+            {
+                var combined = last.EvidenceOrdinals.Concat(candidate.EvidenceOrdinals).Distinct().Order().ToArray();
+                if (Size(last.ProposalIds.Concat(ids).Distinct().ToArray(), combined) <= budget)
+                { windows[^1] = new(last.ProposalIds.Concat(ids).Distinct().ToArray(), combined, false); return; }
+            }
+            windows.Add(candidate);
+        }
+        foreach (var row in proposals) Add([row.Id], Json.Read<ImportClaim>(row.ContentJson).EvidenceOrdinals, false);
+        if (scene is not null) Add([], scene.EvidenceOrdinals, true);
+        return windows.ToArray();
     }
     private static async Task SavePlan(StoryDb db, ImportJob job, string stage, CancellationToken ct)
     {
@@ -231,23 +325,24 @@ public static class Reconstruction
         if (row is null) db.ImportIssues.Add(new ImportIssue { JobId = jobId, Code = issue.Code, Text = issue.Text, Blocking = issue.Blocking, EvidenceJson = Json.Write(issue.EvidenceOrdinals) });
         else { row.Text = issue.Text; row.Blocking = issue.Blocking; row.EvidenceJson = Json.Write(issue.EvidenceOrdinals); row.Resolution = ""; }
     }
-    private static async Task<ImportSegment[]> EvidenceWithinBudget(StoryDb db, ImportJob job, int[] ordinals, CancellationToken ct)
+    private static async Task<ImportSegment[]> EvidenceWithinBudget(StoryDb db, ImportJob job, int[] ordinals, CancellationToken ct, int? budget = null)
     {
         var rows = await db.Segments.Where(x => x.JobId == job.Id && ordinals.Contains(x.Ordinal)).OrderBy(x => x.Ordinal).ToArrayAsync(ct);
-        var result = new List<ImportSegment>(); var chars = 0;
-        foreach (var row in rows) { if (chars + row.Text.Length + 160 > job.InputCharacterLimit / 2) break; result.Add(row); chars += row.Text.Length + 160; }
+        var result = new List<ImportSegment>();
+        foreach (var row in rows) { if (ImportContext.Evidence(result.Append(row)).Length > (budget ?? CurrentEvidenceBudget(job))) break; result.Add(row); }
         return result.ToArray();
     }
     private static async Task<ImportSegment[]> TailEvidence(StoryDb db, ImportJob job, CancellationToken ct)
     {
-        var rows = await db.Segments.Where(x => x.JobId == job.Id).OrderByDescending(x => x.Ordinal).Take(40).ToArrayAsync(ct);
-        var result = new List<ImportSegment>(); var chars = 0;
-        foreach (var row in rows) { if (chars + row.Text.Length + 160 > job.InputCharacterLimit / 3) break; result.Add(row); chars += row.Text.Length + 160; }
+        var rows = await db.Segments.Where(x => x.JobId == job.Id).OrderByDescending(x => x.Ordinal).ToArrayAsync(ct);
+        var result = new List<ImportSegment>();
+        foreach (var row in rows) { if (ImportContext.Evidence(result.Append(row)).Length > CurrentEvidenceBudget(job)) break; result.Add(row); }
         if (job.ResumeJson is not null)
         {
             var prior = Json.Read<ResumeProposal>(job.ResumeJson).EvidenceOrdinals;
             var more = await db.Segments.Where(x => x.JobId == job.Id && prior.Contains(x.Ordinal)).ToArrayAsync(ct);
-            result.AddRange(more.Where(x => !result.Any(s => s.Ordinal == x.Ordinal)));
+            foreach (var row in more.Where(x => !result.Any(s => s.Ordinal == x.Ordinal)).OrderByDescending(x => x.Ordinal))
+                if (ImportContext.Evidence(result.Append(row)).Length <= CurrentEvidenceBudget(job)) result.Add(row);
         }
         return result.OrderBy(x => x.Ordinal).ToArray();
     }
@@ -255,10 +350,28 @@ public static class Reconstruction
     {
         text = text.Trim();
         if (text.StartsWith("```")) { var newline = text.IndexOf('\n'); if (newline >= 0 && text.EndsWith("```")) text = text[(newline + 1)..^3].Trim(); }
-        return text;
+        // Small local models sometimes emit literal line breaks inside quoted JSON.
+        // Escape those characters without changing string values or inventing fields.
+        var output = new System.Text.StringBuilder(text.Length);
+        var quoted = false; var escaped = false;
+        foreach (var ch in text)
+        {
+            if (quoted && !escaped && (ch == '\n' || ch == '\r' || ch == '\t'))
+                output.Append(ch == '\n' ? "\\n" : ch == '\r' ? "\\r" : "\\t");
+            else output.Append(ch);
+            if (!escaped && ch == '"') quoted = !quoted;
+            escaped = quoted && !escaped && ch == '\\';
+        }
+        return output.ToString();
     }
     public static void ValidateClaim(ImportClaim c, HashSet<int> allowed, HashSet<string> keys)
     {
+        if (c is not null && c.Category is not null && !Categories.Contains(c.Category))
+            throw new InvalidOperationException("Claim category must be one of: " + string.Join(", ", Categories) + ".");
+        if (c?.EvidenceOrdinals is { } citations && citations.Any(x => !allowed.Contains(x)))
+            throw new InvalidOperationException("A claim cites a passage not supplied in this stage. Use only supplied ordinal IDs.");
+        if (c?.Key is { } key && c.Category is { } category && !key.StartsWith(category + ":"))
+            throw new InvalidOperationException("Claim keys must start with their category followed by a colon.");
         if (c is null || c.Key is null || c.Category is null || !Categories.Contains(c.Category) || !c.Key.StartsWith(c.Category + ":") || c.Key.Length > 120 ||
             string.IsNullOrWhiteSpace(c.Text) || c.Text.Length > 1000 || c.Subject is null || c.Subject.Length > 100 || c.Target is null || c.Target.Length > 120 || c.Value is null || c.Value.Length > 1000 ||
             c.Kind is not ("fact" or "rumor" or "belief" or "secret" or "correction") || c.Visibility is not ("public" or "narrator") || c.Kind == "secret" && c.Visibility != "narrator" ||
@@ -274,13 +387,13 @@ public static class Reconstruction
     }
     private static void ValidateResult(AgentResult result, HashSet<int> allowed, HashSet<string> keys)
     {
-        if (result is null || result.Claims is null || result.Claims.Length > 16 || result.Issues is null || result.Issues.Length > 16 || result.Summary is null || result.Summary.Length > 4000 || result.ResolvedIssueCodes is null || result.ResolvedIssueCodes.Length > 16) throw new InvalidOperationException("Incomplete reconstruction result.");
+        if (result is null || result.Claims is null || result.Claims.Length > 16 || result.Issues is null || result.Issues.Length > 16 || result.Summary is null || result.Summary.Length > 4000 || result.ResolvedIssueCodes is null || result.ResolvedIssueCodes.Length > 16 || result.ResolvedIssueCodes.Any(x => string.IsNullOrWhiteSpace(x) || x.Length > 200)) throw new InvalidOperationException("Incomplete reconstruction result.");
         if (result.Claims.Any(x => x is null)) throw new InvalidOperationException("A claim was null.");
         if (result.Claims.Select(x => x.Key).Distinct().Count() != result.Claims.Length) throw new InvalidOperationException("Repeated keys in one result.");
         if (result.Claims.Any(x => x.SupersedesKeys?.Any(k => result.Claims.Any(other => other.Key == k && other.Key != x.Key)) == true)) throw new InvalidOperationException("A result cannot both supersede and retain a claim.");
         foreach (var claim in result.Claims) ValidateClaim(claim, allowed, keys);
         foreach (var issue in result.Issues)
-            if (string.IsNullOrWhiteSpace(issue.Code) || issue.Code.Length > 200 || string.IsNullOrWhiteSpace(issue.Text) || issue.Text.Length > 2000 || issue.EvidenceOrdinals is null || issue.EvidenceOrdinals.Any(x => !allowed.Contains(x))) throw new InvalidOperationException("Invalid review issue.");
+            if (issue is null || string.IsNullOrWhiteSpace(issue.Code) || issue.Code.Length > 200 || string.IsNullOrWhiteSpace(issue.Text) || issue.Text.Length > 2000 || issue.EvidenceOrdinals is null || issue.EvidenceOrdinals.Any(x => !allowed.Contains(x))) throw new InvalidOperationException("Invalid review issue.");
         if (result.Resume is { } resume) ValidateResume(resume, allowed);
     }
     public static void ValidateResume(ResumeProposal resume, HashSet<int> allowed)
@@ -295,16 +408,19 @@ public static class Reconstruction
         var claim = JsonNode.Parse("""{"type":"object","additionalProperties":false,"properties":{},"required":[]}""")!;
         var props = claim["properties"]!.AsObject();
         foreach (var name in new[] { "key", "category", "text", "subject", "target", "value", "kind", "visibility", "disposition" }) props[name] = new JsonObject { ["type"] = "string" };
+        foreach (var (name, values) in new[] { ("category", Categories), ("kind", new[] { "fact", "rumor", "belief", "secret", "correction" }),
+            ("visibility", new[] { "public", "narrator" }), ("disposition", new[] { "current", "historical" }) })
+            props[name]!["enum"] = new JsonArray(values.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray());
         props["amount"] = new JsonObject { ["type"] = "integer" };
-        props["confidence"] = new JsonObject { ["type"] = "number" };
+        props["confidence"] = new JsonObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 1 };
         foreach (var name in new[] { "knownBy", "supersedesKeys" }) props[name] = JsonNode.Parse("""{"type":"array","items":{"type":"string"}}""");
-        props["evidenceOrdinals"] = JsonNode.Parse("""{"type":"array","items":{"type":"integer"}}""");
+        props["evidenceOrdinals"] = JsonNode.Parse("""{"type":"array","minItems":1,"maxItems":64,"items":{"type":"integer","minimum":0}}""");
         claim["required"] = new JsonArray(props.Select(x => JsonValue.Create(x.Key)).ToArray<JsonNode?>());
         var issue = JsonNode.Parse("""{"type":"object","additionalProperties":false,"properties":{"code":{"type":"string"},"text":{"type":"string"},"blocking":{"type":"boolean"},"evidenceOrdinals":{"type":"array","items":{"type":"integer"}}},"required":["code","text","blocking","evidenceOrdinals"]}""")!;
         var resume = JsonNode.Parse("""{"type":"object","additionalProperties":false,"properties":{"state":{},"evidenceOrdinals":{"type":"array","items":{"type":"integer"}},"latestAction":{"type":"string"},"replyPending":{"type":"boolean"},"missing":{"type":"array","items":{"type":"string"}}},"required":["state","evidenceOrdinals","latestAction","replyPending","missing"]}""")!;
         resume["properties"]!["state"] = old["properties"]!["resumeState"]!.DeepClone();
         var root = new JsonObject { ["type"] = "object", ["additionalProperties"] = false, ["properties"] = new JsonObject {
-            ["claims"] = new JsonObject { ["type"] = "array", ["items"] = claim }, ["issues"] = new JsonObject { ["type"] = "array", ["items"] = issue },
+            ["claims"] = new JsonObject { ["type"] = "array", ["maxItems"] = 16, ["items"] = claim }, ["issues"] = new JsonObject { ["type"] = "array", ["maxItems"] = 16, ["items"] = issue },
             ["resume"] = new JsonObject { ["anyOf"] = new JsonArray(new JsonObject { ["type"] = "null" }, resume) }, ["summary"] = new JsonObject { ["type"] = "string" },
             ["resolvedIssueCodes"] = JsonNode.Parse("""{"type":"array","items":{"type":"string"}}""") },
             ["required"] = new JsonArray("claims", "issues", "resume", "summary", "resolvedIssueCodes") };

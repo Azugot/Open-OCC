@@ -66,6 +66,14 @@ app.MapGet("/health", async (StoryDb db) => await db.Database.CanConnectAsync() 
 app.MapGet("/api/campaigns", async (StoryDb db, CancellationToken ct) => await db.Campaigns.OrderByDescending(x => x.CreatedAt).Select(c => new
     { c.Id, c.Name, c.CreatedAt, branches = db.Branches.Where(b => b.CampaignId == c.Id).OrderBy(b => b.CreatedAt).Select(b => new { b.Id, b.Name }).ToList() }).ToListAsync(ct));
 app.MapGet("/api/worlds", async (StoryDb db, CancellationToken ct) => await db.Worlds.OrderBy(x => x.Name).Select(x => new { world = x, versions = db.WorldVersions.Where(v => v.WorldId == x.Id).OrderByDescending(v => v.Version).ToList() }).ToListAsync(ct));
+app.MapDelete("/api/campaigns/{id:guid}", async (Guid id, StoryDb db, CancellationToken ct) =>
+{
+    try { await CampaignDeletion.Delete(db, id, ct); }
+    catch (DbUpdateConcurrencyException e) { return Results.Conflict(new { error = e.Message }); }
+    catch (Npgsql.PostgresException e) when (e.SqlState is "40001" or "40P01" or "23503")
+    { return Results.Conflict(new { error = "This story changed while deleting. Wait for active work to finish and retry." }); }
+    return Results.NoContent();
+});
 app.MapPost("/api/worlds", async (CreateWorldRequest request, StoryDb db, CancellationToken ct) => Results.Ok(await WorldService.Create(db, request, ct)));
 app.MapPost("/api/worlds/{id:guid}/versions", async (Guid id, CreateWorldVersionRequest request, StoryDb db, CancellationToken ct) => Results.Ok(await WorldService.CreateVersion(db, id, request, ct)));
 app.MapGet("/api/worlds/{id:guid}", async (Guid id, StoryDb db, CancellationToken ct) => Results.Ok(new { world = await db.Worlds.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException(), versions = await db.WorldVersions.Where(x => x.WorldId == id).OrderByDescending(x => x.Version).ToListAsync(ct) }));
@@ -276,7 +284,13 @@ app.MapPost("/api/branches/{id:guid}/imports", async (Guid id, HttpRequest reque
     using var stream = new MemoryStream(); await file.CopyToAsync(stream, ct);
     var bytes = stream.ToArray();
     var source = new ImportedSource { CampaignId = branch.CampaignId, FileName = name, Bytes = bytes, Sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() };
-    var reconstruction = await routing.Resolve(db, "reconstruction", ct);
+    var importProvider = form["provider"].ToString();
+    var importModel = form["model"].ToString();
+    if (importModel.Length > 200 || importModel.Any(char.IsControl)) throw new InvalidOperationException("Model IDs must contain at most 200 characters and no control characters.");
+    if (!string.IsNullOrWhiteSpace(importProvider) && string.IsNullOrWhiteSpace(importModel))
+        importModel = await db.Providers.Where(x => x.Id == importProvider).Select(x => x.Model).SingleOrDefaultAsync(ct) ?? "";
+    var reconstruction = string.IsNullOrWhiteSpace(importProvider) ? await routing.Resolve(db, "reconstruction", ct) :
+        await routing.ResolveCaptured(db, importProvider, importModel, ct);
     var options = new ImportOptions(
         int.TryParse(form["inputCharacterLimit"], out var inputLimit) ? inputLimit : 24000,
         int.TryParse(form["outputTokenLimit"], out var outputLimit) ? outputLimit : 3000,
