@@ -29,6 +29,7 @@ import {
 import StoryEngine from "./StoryEngine";
 import ModelPicker from "./ModelPicker";
 import ImportReview from "./ImportReview";
+import DeleteStoryModal from "./DeleteStoryModal";
 import type {
   Branch,
   Campaign,
@@ -64,6 +65,7 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [newCampaign, setNewCampaign] = useState(false);
+  const [deleteStory, setDeleteStory] = useState<Campaign | null>(null);
   const [name, setName] = useState("");
   const [synthetic, setSynthetic] = useState(true);
   const [action, setAction] = useState("");
@@ -85,6 +87,8 @@ export default function App() {
   const [importInputLimit, setImportInputLimit] = useState(24000);
   const [importOutputLimit, setImportOutputLimit] = useState(3000);
   const [importCallLimit, setImportCallLimit] = useState(100);
+  const [importProfile, setImportProfile] = useState("");
+  const [importModel, setImportModel] = useState("");
   const [selectedExportFile, setSelectedExportFile] = useState<File | null>(
     null,
   );
@@ -120,6 +124,9 @@ export default function App() {
   useEffect(() => {
     loadLibrary().catch((e) => setError(e.message));
   }, [loadLibrary]);
+  useEffect(() => {
+    if (page === "imports") void api<Profiles>("/providers").then(setProfiles).catch(e => setError(e.message));
+  }, [page]);
   useEffect(() => {
     if (page === "story") end.current?.scrollIntoView({ behavior: "smooth" });
   }, [workspace?.messages.length, page]);
@@ -521,10 +528,10 @@ export default function App() {
             </div>
             <div className="campaign-grid">
               {campaigns.map((c, i) => (
+                <div className="campaign-card-container" key={c.id}>
                 <button
                   disabled={busy}
                   className="campaign-card"
-                  key={c.id}
                   onClick={() => void openBranch(c.branches[0].id)}
                 >
                   <div className={`campaign-cover cover-${i % 3}`}>
@@ -544,6 +551,8 @@ export default function App() {
                     </div>
                   </div>
                 </button>
+                <button className="delete-story-button" disabled={busy} aria-label={`Delete story ${c.name}`} onClick={() => setDeleteStory(c)}>Delete story</button>
+                </div>
               ))}
               <button
                 className="new-card"
@@ -1058,6 +1067,7 @@ export default function App() {
                         String(importOutputLimit),
                       );
                       body.append("maxCalls", String(importCallLimit));
+                      if (importProfile) { body.append("provider", importProfile); body.append("model", importModel); }
                       const job = await api<Job>(
                         `/branches/${branchId}/imports`,
                         { method: "POST", body },
@@ -1085,6 +1095,13 @@ export default function App() {
                       setSelectedFile(e.target.files?.[0] ?? null)
                     }
                   />
+                  <label>Reconstruction profile for this import
+                    <select value={importProfile} onChange={e => { setImportProfile(e.target.value); setImportModel(profiles?.profiles.find(p => p.id === e.target.value)?.model || ""); }}>
+                      <option value="">Use reconstruction settings</option>
+                      {profiles?.profiles.filter(p => p.enabled && p.id !== "fixture").map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  </label>
+                  {importProfile && <ModelPicker profile={profiles?.profiles.find(p => p.id === importProfile)} value={importModel} onChange={setImportModel} disabled={busy} label="Reconstruction model" />}
                   <button className="primary" disabled={busy || !selectedFile}>
                     Preserve & import
                   </button>
@@ -1209,8 +1226,10 @@ export default function App() {
                   <ArrowLeft size={16} /> All imports
                 </button>
                 <ImportReview
+                  key={review.job.id}
                   id={review.job.id}
                   expectedCheckpointId={workspace.checkpoint.id}
+                  onReanalyzed={inspect}
                   onApproved={async () => {
                     await loadWorkspace(workspace.branch.id);
                     setReview(null);
@@ -1688,6 +1707,13 @@ export default function App() {
           </section>
         )}
       </main>
+      {deleteStory && <DeleteStoryModal id={deleteStory.id} name={deleteStory.name} onCancel={() => setDeleteStory(null)} onDeleted={() => {
+        setCampaigns(rows => rows.filter(c => c.id !== deleteStory.id));
+        if (workspace?.campaign.id === deleteStory.id) {
+          generation.current?.abort(); setBranchId(null); setWorkspace(null); setReview(null); setJobs([]); setAction(""); setDraft(""); setAuthorView(false);
+        }
+        setDeleteStory(null); setNotice("Story deleted."); setPage("library");
+      }} />}
       {newCampaign && (
         <div className="modal-backdrop">
           <form

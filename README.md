@@ -6,6 +6,10 @@ The autonomous storyteller adds independent character sessions, a master directo
 
 Lemonade and DeepSeek model lists are detected automatically in provider settings. You can select different models for each task or for character/director roles while sharing one connector. Manual IDs and saved choices remain available when discovery is unavailable.
 
+Story cards include **Delete story** with a confirmation modal. Deletion removes all of that story's timelines, imports, graph history and memories together; reusable world definitions and other stories remain available. Active generation/import processing must finish or be cancelled first.
+
+Imports read connected sections with nearby context and a running summary, while preserving individual evidence links. Choose a model for each import, resume a saved stage, or start a fresh reconstruction from the unchanged original. Validation errors report the failing stage and reason. See [import and review](docs/imports.md).
+
 ## Start with Docker
 
 Requires Docker Desktop (Linux containers) or Docker Engine with Compose. From the repository root:

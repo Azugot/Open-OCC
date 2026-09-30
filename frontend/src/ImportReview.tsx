@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, post, downloadSource } from "./api";
 import type { Job, Profiles, State } from "./api";
+import ModelPicker from "./ModelPicker";
 
 type Claim = { key: string; category: string; text: string; subject: string; target: string; value: string; amount: number; kind: string; visibility: string; knownBy: string[]; confidence: number; evidenceOrdinals: number[]; disposition: string; supersedesKeys: string[] };
 type Proposal = { proposal: { id: string; revision: number; current: boolean; excluded: boolean }; claim: Claim };
@@ -10,7 +11,7 @@ type Draft = { job: Job; source: { id: string; fileName: string; sha256: string 
 type EvidencePage = { total: number; items: { id: string; ordinal: number; speaker: string; text: string; section: string; artifact: boolean; timestamp?: string }[] };
 const categories = ["fact", "character", "relationship", "knowledge", "world", "event", "inventory", "skill", "condition", "thread"];
 
-export default function ImportReview({ id, expectedCheckpointId, onApproved }: { id: string; expectedCheckpointId: string; onApproved: () => Promise<void> }) {
+export default function ImportReview({ id, expectedCheckpointId, onApproved, onReanalyzed }: { id: string; expectedCheckpointId: string; onApproved: () => Promise<void>; onReanalyzed: (id: string) => Promise<void> }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [rows, setRows] = useState<{ total: number; items: Proposal[] }>({ total: 0, items: [] });
   const [category, setCategory] = useState(""); const [query, setQuery] = useState(""); const [page, setPage] = useState(0); const [history, setHistory] = useState(false);
@@ -38,6 +39,7 @@ export default function ImportReview({ id, expectedCheckpointId, onApproved }: {
     <div className="panel">
       <span className="badge">{draft.job.status} · {draft.job.stage}</span><h2>{draft.source.fileName}</h2>
       <p>{draft.job.processed}/{draft.job.total || "?"} passages analyzed · {draft.sections} reading sections · {draft.job.provider} / {draft.job.model}</p>
+      <p>Passages are evidence links. The model reads them together in continuous sections with nearby context and a running story summary.</p>
       <p>{draft.job.calls || 0}/{draft.job.maxCalls} model calls · Reported tokens: {draft.job.inputTokens ?? "unavailable"} input / {draft.job.outputTokens ?? "unavailable"} output</p>
       {draft.job.summary && <p>{draft.job.summary}</p>}{draft.job.error && <p className="text-error">{draft.job.error}</p>}
       <button onClick={() => void perform(async () => downloadSource(draft.source.id, draft.source.fileName))}>Download original</button>{" "}
@@ -47,12 +49,22 @@ export default function ImportReview({ id, expectedCheckpointId, onApproved }: {
       {["paused", "cancelled", "failed"].includes(draft.job.status) && <div className="import-controls">
         <h3>Resume the saved stage</h3>
         <label>Model profile<select value={provider} onChange={e => { setProvider(e.target.value); setModel(profiles?.profiles.find(p => p.id === e.target.value)?.model || ""); }}><option value="">Keep {draft.job.provider} / {draft.job.model}</option>{profiles?.profiles.filter(p => p.enabled && p.id !== "fixture").map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-        {provider && <label>Model<input value={model} onChange={e => setModel(e.target.value)} /></label>}
+        {provider && <ModelPicker profile={profiles?.profiles.find(p => p.id === provider)} value={model} onChange={setModel} label="Reconstruction model" />}
         <label>Total call budget<input type="number" min={1} max={1000} value={maxCalls} onChange={e => setMaxCalls(Number(e.target.value))} /></label>
         <label>Input character budget<input type="number" min={12000} max={120000} value={inputLimit} onChange={e => setInputLimit(Number(e.target.value))} /></label>
         <label>Output token limit<input type="number" min={1000} max={12000} value={outputLimit} onChange={e => setOutputLimit(Number(e.target.value))} /></label>
         <button disabled={busy} onClick={() => void perform(async () => { await post(`/imports/${id}/resume-processing`, { provider: provider || null, model: model || null, maxCalls, inputCharacterLimit: inputLimit, outputTokenLimit: outputLimit }); })}>Resume reconstruction</button>
       </div>}
+      {!["queued", "processing"].includes(draft.job.status) && <details className="import-controls"><summary>Re-read the complete original</summary>
+        <p>Create a fresh reconstruction using larger connected reading sections. The current draft and approved story stay available.</p>
+        <label>Input character budget<input type="number" min={12000} max={120000} value={inputLimit} onChange={e => setInputLimit(Number(e.target.value))} /></label>
+        <label>Output token limit<input type="number" min={1000} max={12000} value={outputLimit} onChange={e => setOutputLimit(Number(e.target.value))} /></label>
+        <label>Total call budget<input type="number" min={1} max={1000} value={maxCalls} onChange={e => setMaxCalls(Number(e.target.value))} /></label>
+        <button disabled={busy} onClick={() => void perform(async () => {
+          const job = await post<Job>(`/imports/${id}/reanalyze`, { inputCharacterLimit: inputLimit, outputTokenLimit: outputLimit, maxCalls });
+          await onReanalyzed(job.id);
+        })}>Start fresh reconstruction</button>
+      </details>}
     </div>
     <div className="panel"><h2>Review exceptions · {unresolved} unresolved</h2>
       <p>Resolve conflicts and acknowledge information the source cannot establish. Clear proposals are included unless you exclude them.</p>

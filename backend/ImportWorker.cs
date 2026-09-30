@@ -61,8 +61,8 @@ public static class ImportParser
 
     private static List<SourceEntry> Validate(List<SourceEntry> entries)
     {
-        if (entries.Count is 0 or > 2000 || entries.Any(x => string.IsNullOrWhiteSpace(x.Text) || x.Text.Length > 16000 || x.Speaker.Length > 100))
-            throw new InvalidOperationException("Import requires 1–2000 nonempty segments, at most 16000 characters each and 100 characters per speaker. Split large transcripts into smaller files.");
+        if (entries.Count is 0 or > 4000 || entries.Sum(x => (long)x.Text.Length) > MaxBytes || entries.Any(x => string.IsNullOrWhiteSpace(x.Text) || x.Speaker.Length > 100))
+            throw new InvalidOperationException("Import requires 1–4000 nonempty passages, at most 2 MiB of extracted text and 100 characters per speaker. Split large transcripts into smaller files.");
         return entries.Select(x => {
             var label = Regex.Match(x.Text, @"^(user|assistant|narrator|player)\s*:", RegexOptions.IgnoreCase);
             return x with { Speaker = label.Success ? label.Groups[1].Value.ToLowerInvariant() : x.Speaker,
