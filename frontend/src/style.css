@@ -1047,3 +1047,16 @@ input[type="checkbox"] {
     padding: 28px;
   }
 }
+.message.streaming { opacity: .9; border-left: 2px solid var(--gold); }
+.button-row { display: flex; gap: .75rem; flex-wrap: wrap; }
+/* Import reconstruction and source evidence */
+.import-review label { display: block; margin: 12px 0; }
+.import-review input:not([type="checkbox"]), .import-review select, .import-review textarea { width: 100%; box-sizing: border-box; }
+.import-item { border-top: 1px solid #dce2d5; padding: 18px 0; }
+.import-item small { display: block; margin: 8px 0; }
+.import-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
+.evidence-overlay { position: fixed; inset: 0; z-index: 100; background: #17201780; display: flex; justify-content: flex-end; }
+.evidence-drawer { background: #fafcf7; width: min(720px, 100%); overflow: auto; padding: 24px; box-sizing: border-box; }
+.evidence-drawer blockquote { margin: 20px 0; padding: 16px; border-left: 3px solid #526848; background: #fff; }
+.evidence-drawer .prose { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 650px) { .import-filters { grid-template-columns: 1fr; } .evidence-drawer { padding: 16px; } }

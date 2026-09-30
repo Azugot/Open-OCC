@@ -14,6 +14,27 @@ async function request(path, body, expected = 200) {
   assert.equal(res.status, expected, `${path}: ${text}`);
   return text ? JSON.parse(text) : null;
 }
+async function put(path, body, expected = 204) {
+  const res = await fetch(`${base}/api${path}`, { method: 'PUT', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const text = await res.text();
+  assert.equal(res.status, expected, `${path}: ${text}`);
+}
+async function turn(path, body) {
+  const res = await fetch(`${base}/api${path}`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const text = await res.text();
+  assert.equal(res.status, 200, `${path}: ${text}`);
+  const events = text.trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(events[0].type, 'start');
+  assert.ok(events.some(event => event.type === 'delta'));
+  assert.equal(events.at(-1).type, 'done');
+}
+// Keep the smoke test deterministic even when a developer has routed narration to a live model.
+// The script targets a disposable local stack; fixture routing avoids consuming provider tokens.
+const initialProviders = await request('/providers');
+const fixture = initialProviders.profiles.find(p => p.id === 'fixture');
+if (!fixture.enabled) await put('/providers/fixture', { model: fixture.model || 'fixture-v1', enabled: true });
+await put('/provider-routing', { narration: 'fixture', reconstruction: 'fixture', memory: 'fixture' });
+try {
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 if (process.argv.includes('--check-saved')) {
   const saved = JSON.parse(await readFile(new URL('../.local/smoke-result.json', import.meta.url)));
@@ -25,6 +46,8 @@ if (process.argv.includes('--check-saved')) {
   assert.equal(download.status, 200);
   assert.equal(hash(Buffer.from(await download.arrayBuffer())), saved.sha256);
   console.log('PASS: checkpoint, messages, state, and original source bytes survive restart/restore.');
+  await put('/provider-routing', initialProviders.tasks);
+  if (!fixture.enabled) await put('/providers/fixture', { model: fixture.model || 'fixture-v1', enabled: false });
   process.exit(0);
 }
 const branch = await request('/campaigns', { name: 'Crownspire · verification', synthetic: true });
@@ -32,7 +55,7 @@ const library = await request('/campaigns');
 assert.ok(library.some(c => c.id === branch.campaignId && c.branches.some(b => b.id === branch.id)));
 const original = await request(`/branches/${branch.id}`);
 assert.equal(original.state.inventory.Crowns, 20);
-await request(`/branches/${branch.id}/turns`, { expectedCheckpointId: original.checkpoint.id, action: 'Read the registration notice.' });
+await turn(`/branches/${branch.id}/turns`, { expectedCheckpointId: original.checkpoint.id, action: 'Read the registration notice.' });
 let view = await request(`/branches/${branch.id}`);
 assert.equal(view.messages.length, 3);
 assert.match(view.messages.at(-1).content, /SIMULATED TURN/);
@@ -47,28 +70,30 @@ assert.equal(upload.status, 202); const job = await upload.json();
 let review;
 for (let attempt = 0; attempt < 30; attempt++) {
   review = await request(`/imports/${job.id}`);
-  if (review.job.status === 'review') break;
+  if (review.job.status === 'paused') break;
   if (review.job.status === 'failed') throw Error(review.job.error);
   await new Promise(resolve => setTimeout(resolve, 500));
 }
-assert.equal(review.job.status, 'review');
-assert.equal(review.candidates.length, 4);
+assert.equal(review.job.status, 'paused');
+assert.equal(review.candidates.length, 0);
 assert.equal(review.source.sha256, hash(bytes));
-const decisions = review.candidates.map(c => ({ factId: c.fact.id, text: c.fact.text, accept: true, visibility: 'narrator' }));
-await request(`/imports/${job.id}/approve`, { expectedCheckpointId: view.checkpoint.id, state: { ...view.state, inventory: { Crowns: -1 } }, decisions }, 400);
+assert.equal((await request(`/imports/${job.id}/evidence`)).total, 4);
+await request(`/imports/${job.id}/approval`, { expectedCheckpointId: view.checkpoint.id, revision: review.job.proposalRevision }, 400);
 assert.equal((await request(`/branches/${branch.id}`)).checkpoint.id, view.checkpoint.id);
-await request(`/imports/${job.id}/approve`, { expectedCheckpointId: view.checkpoint.id, state: view.state, decisions }, 204);
 view = await request(`/branches/${branch.id}`);
-assert.equal(view.facts.length, 4);
-assert.ok(view.facts.every(f => f.visibility === 'narrator'));
+assert.equal(view.facts.length, 0);
 const afterImport = await request(`/branches/${branch.id}/fork`, { checkpointId: view.checkpoint.id, name: 'Reviewed evidence branch' });
-assert.equal((await request(`/branches/${afterImport.id}`)).facts.length, 4);
+assert.equal((await request(`/branches/${afterImport.id}`)).facts.length, 0);
 assert.equal((await request(`/branches/${fork.id}`)).facts.length, 0);
 const download = await fetch(`${base}/api/sources/${job.sourceId}/download`, { headers });
 assert.equal(hash(Buffer.from(await download.arrayBuffer())), hash(bytes));
 const providers = await request('/providers');
-assert.equal(providers.profiles.length, 6);
-assert.equal(providers.profiles.filter(p => p.capabilities.available).length, 1);
+assert.equal(providers.profiles.length, 7);
+assert.equal(providers.profiles.filter(p => p.capabilities.available).length, 7);
 await mkdir(new URL('../.local/', import.meta.url), { recursive: true });
 await writeFile(new URL('../.local/smoke-result.json', import.meta.url), JSON.stringify({ branchId: branch.id, checkpointId: view.checkpoint.id, messageCount: view.messages.length, state: view.state, sourceId: job.sourceId, sha256: hash(bytes) }, null, 2));
-console.log('PASS: PostgreSQL campaign, fixture turn, stale-write rejection, branches, original bytes, import review, state validation, evidence isolation, and provider profiles.');
+console.log('PASS: PostgreSQL campaign, fixture turn, stale-write rejection, branches, original bytes, fixture preservation pause, empty-approval rejection, evidence isolation, and provider profiles.');
+} finally {
+  await put('/provider-routing', initialProviders.tasks);
+  if (!fixture.enabled) await put('/providers/fixture', { model: fixture.model || 'fixture-v1', enabled: false });
+}

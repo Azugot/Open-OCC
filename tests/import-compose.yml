@@ -1,0 +1,14 @@
+# Isolated synthetic verification stack: no user data or paid providers.
+services:
+  frontend:
+    ports: !override
+      - "127.0.0.1:8082:80"
+  backend:
+    environment:
+      APP_ACCESS_TOKEN: ""
+      DEEPSEEK_BASE_URL: http://host.docker.internal:23306/v1
+      DEEPSEEK_API_KEY: synthetic-test
+      DEEPSEEK_DEFAULT_MODEL: scripted
+      NARRATION_PROVIDER: fixture
+      RECONSTRUCTION_PROVIDER: deepseek
+      MEMORY_PROVIDER: fixture
