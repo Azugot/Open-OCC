@@ -108,7 +108,17 @@ public class ImportedSource
     public string FileName { get; set; } = "";
     public string Sha256 { get; set; } = "";
     public byte[] Bytes { get; set; } = [];
+    public string NormalizedText { get; set; } = "";
+    public string StructureJson { get; set; } = "{}";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+public class ImportedHistory
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid BranchId { get; set; }
+    public Guid SourceId { get; set; }
+    public Guid JobId { get; set; }
+    public int EffectiveSequence { get; set; }
 }
 public class ImportJob
 {
@@ -152,6 +162,8 @@ public class ImportSegment
     public string Section { get; set; } = "";
     public string? Timestamp { get; set; }
     public bool Artifact { get; set; }
+    public int Start { get; set; } = -1;
+    public int Length { get; set; }
 }
 public class ImportSection
 {

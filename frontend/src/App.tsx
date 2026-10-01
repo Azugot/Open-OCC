@@ -30,6 +30,7 @@ import StoryEngine from "./StoryEngine";
 import ModelPicker from "./ModelPicker";
 import ImportReview from "./ImportReview";
 import DeleteStoryModal from "./DeleteStoryModal";
+import { TranscriptHistory } from "./TranscriptViewer";
 import type {
   Branch,
   Campaign,
@@ -100,6 +101,7 @@ export default function App() {
   const [authorView, setAuthorView] = useState(false);
   const generation = useRef<AbortController | null>(null);
   const end = useRef<HTMLDivElement>(null);
+  const activeRun = workspace?.runs.find(r => ["running", "paused"].includes(r.status));
   const loadLibrary = useCallback(
     async () => setCampaigns(await api<Campaign[]>("/campaigns")),
     [],
@@ -130,6 +132,11 @@ export default function App() {
   useEffect(() => {
     if (page === "story") end.current?.scrollIntoView({ behavior: "smooth" });
   }, [workspace?.messages.length, page]);
+  useEffect(() => {
+    if (page !== "story" || !branchId || activeRun?.status !== "running") return;
+    const timer = setInterval(() => void loadWorkspace(branchId).catch(e => setError(e.message)), 2000);
+    return () => clearInterval(timer);
+  }, [page, branchId, activeRun?.status, loadWorkspace]);
   useEffect(() => {
     if (page !== "imports" || !branchId) return;
     let active = true;
@@ -250,7 +257,7 @@ export default function App() {
     });
   const send = () =>
     run(async () => {
-      if (!workspace) return;
+      if (!workspace || activeRun) return;
       const controller = new AbortController();
       generation.current = controller;
       try {
@@ -279,6 +286,12 @@ export default function App() {
         setDraft("");
       }
     });
+  const recoverRun = (id: string, operation: "retry" | "cancel") => run(async () => {
+    if (!workspace) return;
+    try { await post(`/runs/${id}/${operation}`); }
+    finally { await loadWorkspace(workspace.branch.id); }
+    setNotice(operation === "cancel" ? "Saved generation cancelled. Your checkpoint is unchanged." : "Saved generation retried.");
+  });
   const inspect = (id: string) =>
     run(async () => {
       const data = await api<Review>(`/imports/${id}`);
@@ -628,37 +641,7 @@ export default function App() {
                 <MapPin size={15} /> {workspace.state.location}
               </div>
               <div className="messages">
-                {authorView &&
-                  workspace.messages.some(
-                    (m) => m.provider === "imported-source",
-                  ) && (
-                    <details className="panel imported-history">
-                      <summary>
-                        Preserved transcript history ·{" "}
-                        {
-                          workspace.messages.filter(
-                            (m) => m.provider === "imported-source",
-                          ).length
-                        }{" "}
-                        passages
-                      </summary>
-                      <p>
-                        Original source passages, not newly generated narration.
-                        Browse import evidence for citations and review
-                        decisions.
-                      </p>
-                      {workspace.messages
-                        .filter((m) => m.provider === "imported-source")
-                        .map((m) => (
-                          <article key={m.id} className={`message ${m.role}`}>
-                            <div className="message-label">
-                              SOURCE · {m.role}
-                            </div>
-                            <div className="prose">{m.content}</div>
-                          </article>
-                        ))}
-                    </details>
-                  )}
+                {authorView && <TranscriptHistory branchId={workspace.branch.id} checkpointId={workspace.checkpoint.id} />}
                 {workspace.messages
                   .filter((m) => m.provider !== "imported-source")
                   .map((m) => (
@@ -684,6 +667,17 @@ export default function App() {
                 )}
                 <div ref={end} />
               </div>
+              {activeRun && <section className="panel story-recovery" aria-live="polite">
+                <h2>{activeRun.status === "paused" ? "Story generation paused" : "Story generation in progress"}</h2>
+                {activeRun.action && <p>Pending action: {activeRun.action}</p>}
+                {activeRun.error && <p className="text-error">{activeRun.error}</p>}
+                <p>{activeRun.status === "paused" ? "Retry the saved work or cancel it before starting another action. Your committed story is preserved." : "Follow character responses and the director in Live world."}</p>
+                <div className="transcript-pagination">
+                  {activeRun.status === "paused" && <button type="button" disabled={busy} onClick={() => void recoverRun(activeRun.id, "retry")}>Retry saved generation</button>}
+                  <button type="button" disabled={busy} onClick={() => void recoverRun(activeRun.id, "cancel")}>Cancel saved generation</button>
+                  <button type="button" onClick={() => navigate("engine")}>Open Live world</button>
+                </div>
+              </section>}
               <form
                 className="composer"
                 onSubmit={(e) => {
@@ -730,7 +724,7 @@ export default function App() {
                   ) : (
                     <button
                       className="primary"
-                      disabled={busy || !action.trim()}
+                      disabled={busy || !!activeRun || !action.trim()}
                     >
                       <ArrowUp size={17} /> Continue
                     </button>
@@ -1067,6 +1061,7 @@ export default function App() {
                         String(importOutputLimit),
                       );
                       body.append("maxCalls", String(importCallLimit));
+                      body.append("prepareOnly", "true");
                       if (importProfile) { body.append("provider", importProfile); body.append("model", importModel); }
                       const job = await api<Job>(
                         `/branches/${branchId}/imports`,
@@ -1076,8 +1071,9 @@ export default function App() {
                         await api<Job[]>(`/branches/${branchId}/imports`),
                       );
                       setNotice(
-                        `Source preserved. Import ${job.id.slice(0, 8)} is queued for processing.`,
+                        "Source preserved and grouped. Review its structure before starting reconstruction.",
                       );
+                      await inspect(job.id);
                     });
                   }}
                 >
@@ -1085,7 +1081,7 @@ export default function App() {
                   <h2>A whole history, a fresh beginning.</h2>
                   <p>
                     UTF-8 text, Markdown, HTML, DOCX, or documented JSON · Up to
-                    2 MiB
+                    32 MiB per file · 16 MiB extracted text
                   </p>
                   <input
                     aria-label="Transcript file"
@@ -1103,7 +1099,7 @@ export default function App() {
                   </label>
                   {importProfile && <ModelPicker profile={profiles?.profiles.find(p => p.id === importProfile)} value={importModel} onChange={setImportModel} disabled={busy} label="Reconstruction model" />}
                   <button className="primary" disabled={busy || !selectedFile}>
-                    Preserve & import
+                    Preserve & preview
                   </button>
                   <details>
                     <summary>Processing budget</summary>
@@ -1151,7 +1147,7 @@ export default function App() {
                   </details>
                   <small>
                     The selected reconstruction provider receives transcript
-                    batches. Imported facts remain reviewable before becoming
+                    grouped text after you start reconstruction. Imported facts remain reviewable before becoming
                     canon.
                   </small>
                 </form>
@@ -1167,7 +1163,7 @@ export default function App() {
                         <strong>Import {j.id.slice(0, 8)}</strong>
                         <small>
                           {j.status} · {j.stage || "legacy"} · {j.processed}/
-                          {j.total || "?"} passages
+                          {j.total || "?"} {j.method === "agent-v3" ? "blocks" : "passages"}
                         </small>
                         {j.error && (
                           <small className="text-error">{j.error}</small>
@@ -1198,7 +1194,7 @@ export default function App() {
                           Cancel
                         </button>
                       )}
-                      {j.method !== "agent-v2" &&
+                      {!["agent-v2", "agent-v3"].includes(j.method) &&
                         ["cancelled", "failed"].includes(j.status) && (
                           <button
                             disabled={busy}
@@ -1220,7 +1216,7 @@ export default function App() {
                   ))}
                 </div>
               </>
-            ) : review.job.method === "agent-v2" ? (
+            ) : ["agent-v2", "agent-v3"].includes(review.job.method) ? (
               <>
                 <button className="text-button" onClick={() => setReview(null)}>
                   <ArrowLeft size={16} /> All imports

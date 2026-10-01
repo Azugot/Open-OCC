@@ -26,6 +26,7 @@ public static class CampaignDeletion
         await db.ImportProposals.Where(x => jobs.Contains(x.JobId)).ExecuteDeleteAsync(ct);
         await db.ImportResults.Where(x => jobs.Contains(x.JobId)).ExecuteDeleteAsync(ct);
         await db.ImportSections.Where(x => jobs.Contains(x.JobId)).ExecuteDeleteAsync(ct);
+        await db.ImportedHistory.Where(x => branches.Contains(x.BranchId) || jobs.Contains(x.JobId)).ExecuteDeleteAsync(ct);
         await db.Segments.Where(x => jobs.Contains(x.JobId)).ExecuteDeleteAsync(ct);
         await db.Facts.Where(x => branches.Contains(x.BranchId)).ExecuteDeleteAsync(ct);
         await db.ImportJobs.Where(x => jobs.Contains(x.Id)).ExecuteDeleteAsync(ct);

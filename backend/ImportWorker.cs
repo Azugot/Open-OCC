@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using System.Xml;
 using Microsoft.EntityFrameworkCore;
 
 namespace Story;
@@ -10,10 +11,11 @@ namespace Story;
 public record SourceEntry(string Speaker, string Text, string Section = "", string? Timestamp = null, bool Artifact = false);
 public static class ImportParser
 {
-    public const int MaxBytes = 2 * 1024 * 1024;
+    public const int MaxBytes = 32 * 1024 * 1024;
+    public const int MaxTextCharacters = 16 * 1024 * 1024;
     public static List<SourceEntry> Parse(string name, byte[] bytes)
     {
-        if (bytes.Length is 0 or > MaxBytes) throw new InvalidOperationException("Import must be between 1 byte and 2 MiB.");
+        if (bytes.Length is 0 or > MaxBytes) throw new InvalidOperationException("Import must be between 1 byte and 32 MiB.");
         var extension = Path.GetExtension(name).ToLowerInvariant();
         if (extension == ".docx") return Validate(ParseDocx(bytes));
         var text = new UTF8Encoding(false, true).GetString(bytes).TrimStart('\uFEFF');
@@ -40,14 +42,29 @@ public static class ImportParser
     {
         using var archive = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read);
         var document = archive.GetEntry("word/document.xml") ?? throw new InvalidOperationException("DOCX does not contain word/document.xml.");
-        if (document.Length > 16 * 1024 * 1024) throw new InvalidOperationException("DOCX document text exceeds 16 MiB.");
+        if (document.Length > 128 * 1024 * 1024) throw new InvalidOperationException("DOCX XML exceeds 128 MiB.");
         using var stream = document.Open();
-        var xml = XDocument.Load(stream);
+        using var reader = XmlReader.Create(stream, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit,
+            XmlResolver = null, MaxCharactersInDocument = 128 * 1024 * 1024 });
         XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-        return xml.Descendants(w + "p").Select(p => new SourceEntry("unknown",
-            string.Concat(p.Descendants().Select(t => t.Name == w + "t" ? t.Value : t.Name == w + "tab" ? "\t" : t.Name == w + "br" ? "\n" : "")).Trim(),
-            p.Descendants(w + "pStyle").Any(s => ((string?)s.Attribute(w + "val"))?.Contains("Heading", StringComparison.OrdinalIgnoreCase) == true) ? "heading" : p.Ancestors(w + "tbl").Any() ? "table" : ""))
-            .Where(x => x.Text.Length > 0).ToList();
+        var entries = new List<SourceEntry>(); var tableDepth = -1; long characters = 0;
+        while (!reader.EOF)
+        {
+            if (reader.NodeType == XmlNodeType.Element && reader.NamespaceURI == w && reader.LocalName == "tbl") tableDepth = reader.Depth;
+            if (reader.NodeType == XmlNodeType.EndElement && reader.NamespaceURI == w && reader.LocalName == "tbl" && reader.Depth == tableDepth) tableDepth = -1;
+            if (reader.NodeType == XmlNodeType.Element && reader.NamespaceURI == w && reader.LocalName == "p")
+            {
+                var p = (XElement)XNode.ReadFrom(reader);
+                var text = string.Concat(p.Descendants().Select(t => t.Name == w + "t" ? t.Value : t.Name == w + "tab" ? "\t" : t.Name == w + "br" ? "\n" : ""));
+                if (string.IsNullOrWhiteSpace(text)) continue;
+                characters += text.Length;
+                if (characters > MaxTextCharacters) throw new InvalidOperationException("Extracted document exceeds 16 MiB of text.");
+                entries.Add(new("unknown", text, p.Descendants(w + "pStyle").Any(s => ((string?)s.Attribute(w + "val"))?.Contains("Heading", StringComparison.OrdinalIgnoreCase) == true) ? "heading" : tableDepth >= 0 ? "table" : ""));
+                continue;
+            }
+            reader.Read();
+        }
+        return entries;
     }
 
     private static string HtmlToText(string html)
@@ -61,8 +78,8 @@ public static class ImportParser
 
     private static List<SourceEntry> Validate(List<SourceEntry> entries)
     {
-        if (entries.Count is 0 or > 4000 || entries.Sum(x => (long)x.Text.Length) > MaxBytes || entries.Any(x => string.IsNullOrWhiteSpace(x.Text) || x.Speaker.Length > 100))
-            throw new InvalidOperationException("Import requires 1–4000 nonempty passages, at most 2 MiB of extracted text and 100 characters per speaker. Split large transcripts into smaller files.");
+        if (entries.Count == 0 || entries.Sum(x => (long)x.Text.Length) > MaxTextCharacters || entries.Any(x => string.IsNullOrWhiteSpace(x.Text) || x.Speaker.Length > 100))
+            throw new InvalidOperationException("Import requires readable text, at most 16 MiB of extracted text and 100 characters per speaker.");
         return entries.Select(x => {
             var label = Regex.Match(x.Text, @"^(user|assistant|narrator|player)\s*:", RegexOptions.IgnoreCase);
             return x with { Speaker = label.Success ? label.Groups[1].Value.ToLowerInvariant() : x.Speaker,
@@ -77,6 +94,12 @@ public sealed class ImportWorker(IServiceScopeFactory scopes, ILogger<ImportWork
     private static readonly string WorkerId = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        using (var startupScope = scopes.CreateScope())
+        {
+            var startupDb = startupScope.ServiceProvider.GetRequiredService<StoryDb>();
+            await startupDb.ImportJobs.Where(x => x.Status == "preparing").ExecuteUpdateAsync(setters => setters
+                .SetProperty(x => x.Status, "paused").SetProperty(x => x.Error, "Source preparation was interrupted. Resume to prepare the preserved document."), stoppingToken);
+        }
         while (!stoppingToken.IsCancellationRequested)
         {
             Guid? activeJobId = null;
@@ -99,7 +122,7 @@ public sealed class ImportWorker(IServiceScopeFactory scopes, ILogger<ImportWork
                     var heartbeat = RenewLease(scopes, job.Id, work, heartbeatStop.Token);
                     try
                     {
-                        if (job.Method == Reconstruction.Method)
+                        if (Reconstruction.IsAgent(job.Method))
                         {
                             var routed = job.Stage == "normalize" || job.Provider == "fixture" ? null : await routing.ResolveCaptured(db, job.Provider, job.Model, work.Token);
                             await Reconstruction.Step(db, job, routed?.Provider, work.Token);

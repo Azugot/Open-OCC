@@ -15,7 +15,7 @@ builder.Services.AddScoped<ProviderRouting>();
 builder.Services.AddScoped<ContinuityService>();
 builder.Services.AddHostedService<ImportWorker>();
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o => o.MultipartBodyLengthLimit = ImportParser.MaxBytes + 65536);
-builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 4 * 1024 * 1024);
+builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = ImportParser.MaxBytes + 1024 * 1024);
 var app = builder.Build();
 
 app.Use(async (context, next) =>
@@ -91,7 +91,7 @@ app.MapGet("/api/branches/{id:guid}", async (Guid id, StoryDb db, CancellationTo
     var campaign = await db.Campaigns.SingleAsync(x => x.Id == branch.CampaignId, ct);
     var checkpoint = await db.Checkpoints.SingleAsync(x => x.Id == branch.HeadCheckpointId, ct);
     return Results.Ok(new { branch, campaign, checkpoint, state = Json.Read<StoryState>(checkpoint.StateJson),
-        messages = await db.Messages.Where(x => x.BranchId == id).OrderBy(x => x.Sequence).ToListAsync(ct),
+        messages = await db.Messages.Where(x => x.BranchId == id && x.Provider != "imported-source").OrderBy(x => x.Sequence).ToListAsync(ct),
         checkpoints = await db.Checkpoints.Where(x => x.BranchId == id).OrderByDescending(x => x.Sequence).Select(x => new { x.Id, x.Sequence, x.Label, x.CreatedAt }).ToListAsync(ct),
         branches = await db.Branches.Where(x => x.CampaignId == branch.CampaignId).OrderBy(x => x.CreatedAt).ToListAsync(ct),
         facts = await db.Facts.Where(x => x.BranchId == id && x.ReviewStatus == "accepted").ToListAsync(ct),
@@ -280,7 +280,7 @@ app.MapPost("/api/branches/{id:guid}/imports", async (Guid id, HttpRequest reque
     var file = form.Files.GetFile("file") ?? throw new InvalidOperationException("Select a UTF-8 .txt, .md, .html, .docx, or .json file.");
     var name = Path.GetFileName(file.FileName.Replace('\\', '/'));
     if (file.Length is <= 0 or > ImportParser.MaxBytes || name.Length > 200 || Path.GetExtension(name).ToLowerInvariant() is not (".txt" or ".md" or ".markdown" or ".html" or ".htm" or ".docx" or ".json"))
-        throw new InvalidOperationException("Supported uploads: .txt, .md, .html, .docx, or .json, up to 2 MiB, with a filename of at most 200 characters.");
+        throw new InvalidOperationException("Supported uploads: .txt, .md, .html, .docx, or .json, up to 32 MiB, with a filename of at most 200 characters.");
     using var stream = new MemoryStream(); await file.CopyToAsync(stream, ct);
     var bytes = stream.ToArray();
     var source = new ImportedSource { CampaignId = branch.CampaignId, FileName = name, Bytes = bytes, Sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() };
@@ -296,10 +296,23 @@ app.MapPost("/api/branches/{id:guid}/imports", async (Guid id, HttpRequest reque
         int.TryParse(form["outputTokenLimit"], out var outputLimit) ? outputLimit : 3000,
         int.TryParse(form["maxCalls"], out var maxCalls) ? maxCalls : 100);
     Reconstruction.ValidateOptions(options);
+    var prepareOnly = bool.TryParse(form["prepareOnly"], out var previewRequested) && previewRequested;
     var job = new ImportJob { BranchId = id, SourceId = source.Id, ExpectedCheckpointId = branch.HeadCheckpointId,
         Method = Reconstruction.Method, Provider = reconstruction.Profile.Id, Model = reconstruction.Profile.Model,
+        Status = prepareOnly ? "preparing" : "queued",
         InputCharacterLimit = options.InputCharacterLimit, OutputTokenLimit = options.OutputTokenLimit, MaxCalls = options.MaxCalls };
     db.AddRange(source, job); await db.SaveChangesAsync(ct);
+    if (prepareOnly)
+    {
+        // Source-first preview is deterministic and makes no provider request.
+        try { await Reconstruction.Step(db, job, null, ct); }
+        catch (Exception error) when (error is InvalidOperationException or System.Xml.XmlException or InvalidDataException or DecoderFallbackException)
+        {
+            // Failed preparation still preserves the exact source for inspection.
+            job.Status = "paused"; job.Error = "Source preparation failed: " + error.Message;
+            await db.SaveChangesAsync(ct);
+        }
+    }
     return Results.Accepted($"/api/imports/{job.Id}", job);
 });
 app.MapGet("/api/branches/{id:guid}/imports", async (Guid id, StoryDb db) => await db.ImportJobs.Where(x => x.BranchId == id).OrderByDescending(x => x.CreatedAt).ToListAsync());
@@ -317,18 +330,19 @@ app.MapGet("/api/sources/{id:guid}/download", async (Guid id, StoryDb db) =>
 app.MapPost("/api/imports/{id:guid}/cancel", async (Guid id, StoryDb db) =>
 {
     var job = await db.ImportJobs.SingleOrDefaultAsync(x => x.Id == id) ?? throw new KeyNotFoundException();
-    if (job.Status is not ("queued" or "processing" or "review")) throw new InvalidOperationException("This job cannot be cancelled.");
+    if (job.Status is not ("queued" or "processing" or "review" or "prepared" or "paused")) throw new InvalidOperationException("This job cannot be cancelled.");
     job.Status = "cancelled"; job.LeaseOwner = null; job.LeaseUntil = null; job.ProposalRevision++; await db.SaveChangesAsync(); return Results.NoContent();
 });
 app.MapPost("/api/imports/{id:guid}/retry", async (Guid id, StoryDb db) =>
 {
     var job = await db.ImportJobs.SingleOrDefaultAsync(x => x.Id == id) ?? throw new KeyNotFoundException();
-    if (job.Method == Reconstruction.Method) throw new InvalidOperationException("Use Resume processing to retry an agent import.");
+    if (Reconstruction.IsAgent(job.Method)) throw new InvalidOperationException("Use Resume processing to retry an agent import.");
     if (job.Status is not ("cancelled" or "failed")) throw new InvalidOperationException("Only failed or cancelled imports can resume.");
     job.Status = "queued"; job.Error = null; await db.SaveChangesAsync(); return Results.NoContent();
 });
 app.MapPost("/api/imports/{id:guid}/approve", async (Guid id, ApproveImport request, StoryDb db, CancellationToken ct) => { await CampaignService.Approve(db, id, request, ct); return Results.NoContent(); });
 ImportReview.Map(app);
+TranscriptApi.Map(app);
 EngineApi.Map(app);
 app.Run();
 

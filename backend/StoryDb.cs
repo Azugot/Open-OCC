@@ -12,6 +12,7 @@ public class StoryDb(DbContextOptions<StoryDb> options) : DbContext(options)
     public DbSet<Message> Messages => Set<Message>();
     public DbSet<GenerationRun> GenerationRuns => Set<GenerationRun>();
     public DbSet<ImportedSource> Sources => Set<ImportedSource>();
+    public DbSet<ImportedHistory> ImportedHistory => Set<ImportedHistory>();
     public DbSet<ImportJob> ImportJobs => Set<ImportJob>();
     public DbSet<ImportSegment> Segments => Set<ImportSegment>();
     public DbSet<ImportSection> ImportSections => Set<ImportSection>();
@@ -55,6 +56,11 @@ public class StoryDb(DbContextOptions<StoryDb> options) : DbContext(options)
         b.Entity<ImportedSource>().HasOne<Campaign>().WithMany().HasForeignKey(x => x.CampaignId).OnDelete(DeleteBehavior.Restrict);
         b.Entity<ImportJob>().HasOne<ImportedSource>().WithMany().HasForeignKey(x => x.SourceId).OnDelete(DeleteBehavior.Restrict);
         b.Entity<ImportJob>().HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        b.Entity<ImportedHistory>().HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
+        b.Entity<ImportedHistory>().HasOne<ImportedSource>().WithMany().HasForeignKey(x => x.SourceId).OnDelete(DeleteBehavior.Restrict);
+        b.Entity<ImportedHistory>().HasOne<ImportJob>().WithMany().HasForeignKey(x => x.JobId).OnDelete(DeleteBehavior.Restrict);
+        b.Entity<ImportedHistory>().HasIndex(x => new { x.BranchId, x.JobId }).IsUnique();
+        b.Entity<ImportedHistory>().HasIndex(x => new { x.BranchId, x.EffectiveSequence });
         b.Entity<ImportSegment>().HasOne<ImportJob>().WithMany().HasForeignKey(x => x.JobId).OnDelete(DeleteBehavior.Restrict);
         b.Entity<Fact>().HasOne<Branch>().WithMany().HasForeignKey(x => x.BranchId).OnDelete(DeleteBehavior.Restrict);
         b.Entity<FactEvidence>().HasOne<Fact>().WithMany().HasForeignKey(x => x.FactId).OnDelete(DeleteBehavior.Restrict);

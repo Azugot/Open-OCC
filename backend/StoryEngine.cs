@@ -45,18 +45,22 @@ public static class StoryEngine
 
     public static void ValidateAttempt(Attempt a)
     {
-        if (a is null || a.Modifiers is null || a.Modifiers.Length > 12 || a.Difficulty is < 1 or > 40 ||
+        if (a is null) throw new InvalidOperationException("An action assessment is required.");
+        if (a.Difficulty < (a.Uncertain ? 1 : 0) || a.Difficulty > 40)
+            throw new InvalidOperationException("Action difficulty must be 1–40 for an uncertain attempt or 0–40 for a routine action with no roll.");
+        if (a.Modifiers is null || a.Modifiers.Length > 12 ||
             a.Modifiers.Any(x => x is null || x.Value is < -20 or > 20 || string.IsNullOrWhiteSpace(x.Label) || x.Label.Length > 200))
-            throw new InvalidOperationException("Invalid action difficulty or modifiers.");
+            throw new InvalidOperationException("Action modifiers must be an array of up to 12 named modifiers, each an integer from -20 to 20. Use [] when none apply.");
         Text(a.Text, 2000); Text(a.Explanation, 2000);
     }
 
     public static object CharacterContext(StoryWorld w, string actorId, string[] publicFacts, string[]? privateKnowledge = null)
     {
         var actor = w.Entities.Single(x => x.Id == actorId);
-        var events = w.Events.Where(x => x.PerceivedBy.Contains(actorId)).TakeLast(24).ToArray();
+        var events = w.Events.Where(x => x.PerceivedBy.Contains(actorId)).TakeLast(24).Select(x => x with { SourceEvidence = null }).ToArray();
         var known = events.SelectMany(x => x.EntityIds).ToHashSet();
-        var scene = w.Entities.Where(x => ((x.LocationId == actor.LocationId && (x.KnownTo is null || x.KnownTo.Contains(actorId))) || known.Contains(x.Id) || x.Id == actor.LocationId || x.Id == actorId)).Take(40)
+        var scene = w.Entities.Where(x => x.Id == actorId ||
+            ((x.KnownTo is null || x.KnownTo.Contains(actorId)) && ((!string.IsNullOrEmpty(actor.LocationId) && x.LocationId == actor.LocationId) || known.Contains(x.Id) || x.Id == actor.LocationId))).Take(40)
             .Select(x => x.LocationId == actor.LocationId || x.Id == actor.LocationId ? x : x with { LocationId = "", Description = "Previously encountered; current whereabouts unknown." }).ToArray();
         return new { actor, character = w.Characters.Single(x => x.EntityId == actorId), entities = scene, recentEvents = events,
             memories = RetrieveMemories(w, actorId, string.Join(" ", events.TakeLast(3).Select(x => x.Text))),
@@ -82,13 +86,24 @@ public static class StoryEngine
         return chosen.Where(x => { budget -= x.Text.Length; return budget >= 0; }).ToArray();
     }
 
-    private static object DirectorContext(StoryWorld w, string[] facts, StoryState? playerState = null, object? canon = null) => new
+    private static object DirectorContext(StoryWorld w, string[] facts, StoryState? playerState = null, object? canon = null)
     {
-        entities = w.Entities.Take(80).Select(x => x with { Description = x.Description[..Math.Min(x.Description.Length, 300)] }),
-        characters = w.Characters.Take(30), w.PlayerLocationId, w.TimeMinutes, playerState,
-        recentEvents = w.Events.TakeLast(24), memories = RetrieveMemories(w, "director", string.Join(" ", w.Events.TakeLast(5).Select(x => x.Text))),
-        precedents = w.Checks.TakeLast(12), facts = facts.Take(40).Select(x => x[..Math.Min(x.Length, 1000)]), canon
-    };
+        var recent = w.Events.TakeLast(24).Select(x => x with { SourceEvidence = null }).ToArray();
+        var involved = recent.SelectMany(x => x.EntityIds).ToHashSet();
+        int Relevance(WorldEntity entity) => entity.Id == "player" || entity.Id == w.PlayerLocationId || entity.LocationId == w.PlayerLocationId ? 0 : involved.Contains(entity.Id) ? 1 : 2;
+        var entities = w.Entities.OrderBy(Relevance).Take(80).Select(x => x with { Description = x.Description[..Math.Min(x.Description.Length, 300)] }).ToArray();
+        var entityPriority = entities.Select((entity, index) => (entity.Id, index)).ToDictionary(x => x.Id, x => x.index);
+        var query = string.Join(" ", recent.TakeLast(5).Select(x => x.Text)) + " " + playerState?.Location + " " + playerState?.Objective;
+        var words = query.Split([' ', ',', '.', '\n'], StringSplitOptions.RemoveEmptyEntries).Where(x => x.Length > 3).Take(50).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return new {
+            entities, characters = w.Characters.OrderBy(x => entityPriority.GetValueOrDefault(x.EntityId, int.MaxValue)).Take(30),
+            allowedActors = w.Characters.OrderBy(x => entityPriority.GetValueOrDefault(x.EntityId, int.MaxValue)).Take(30)
+                .Select(c => { var e = w.Entities.Single(x => x.Id == c.EntityId); return new { id = e.Id, e.Name, e.LocationId, inCurrentScene = e.LocationId != "" && e.LocationId == w.PlayerLocationId }; }),
+            w.PlayerLocationId, w.TimeMinutes, playerState, recentEvents = recent, memories = RetrieveMemories(w, "director", query),
+            precedents = w.Checks.TakeLast(12), facts = facts.OrderByDescending(f => words.Count(word => f.Contains(word, StringComparison.OrdinalIgnoreCase)))
+                .Take(40).Select(x => x[..Math.Min(x.Length, 1000)]), canon
+        };
+    }
 
     public static async Task Execute(StoryDb db, GenerationRun run, IConfiguration config, CancellationToken ct,
         IAgentProvider? characterOverride = null, IAgentProvider? directorOverride = null)
@@ -122,20 +137,30 @@ public static class StoryEngine
             var canon = new { worldVersion = version, activeThreads = threads };
 
             var advance = System.Text.RegularExpressions.Regex.IsMatch(run.Action, "\\b(wait|rest|sleep|advance)\\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase) ? 10 : 0;
-            var selected = w.Characters.Where(c => advance > 0 || w.Entities.Single(e => e.Id == c.EntityId).LocationId == w.PlayerLocationId).Take(w.Settings.MaxNpcs).Select(x => x.EntityId).ToArray();
+            bool NamedActor(CharacterState c)
+            {
+                var name = w.Entities.Single(e => e.Id == c.EntityId).Name;
+                return run.Action.Contains(name, StringComparison.OrdinalIgnoreCase) || run.Action.Contains(name.Split(' ')[0], StringComparison.OrdinalIgnoreCase);
+            }
+            var selected = w.Characters.Where(c => advance > 0 || w.Entities.Single(e => e.Id == c.EntityId).LocationId == w.PlayerLocationId)
+                .OrderByDescending(NamedActor).Take(w.Settings.MaxNpcs).Select(x => x.EntityId).ToArray();
             var uncertain = System.Text.RegularExpressions.Regex.IsMatch(run.Action, "\\b(force|attack|persuade|convince|break|sneak)\\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             var plan = await Step("plan", "plan", director, new { action = run.Action, world = DirectorContext(w, allFacts, draft.State, canon), limits = w.Settings },
                 new TurnPlan(selected, advance, new(run.Action, uncertain, 14, [], uncertain ? "A contested attempt against academy precautions." : "An ordinary action needs no roll.")),
                 p => {
-                    if (p.ActorIds is null || p.ActorIds.Length > w.Settings.MaxNpcs || p.ActorIds.Distinct().Count() != p.ActorIds.Length || p.AdvanceMinutes is < 0 or > 1440 ||
-                        p.ActorIds.Any(id => !w.Characters.Any(x => x.EntityId == id) || (p.AdvanceMinutes == 0 && w.Entities.Single(x => x.Id == id).LocationId != w.PlayerLocationId)))
-                        throw new InvalidOperationException("Director selected invalid actors or time advancement.");
+                    if (p.ActorIds is null || p.ActorIds.Length > w.Settings.MaxNpcs || p.ActorIds.Distinct().Count() != p.ActorIds.Length)
+                        throw new InvalidOperationException($"Director selected invalid actors: actorIds must contain up to {w.Settings.MaxNpcs} unique NPC entity IDs from allowedActors, excluding player.");
+                    if (p.AdvanceMinutes is < 0 or > 1440) throw new InvalidOperationException("Director selected invalid time advancement: advanceMinutes must be an integer from 0 through 1440.");
+                    if (p.ActorIds.Any(id => !w.Characters.Any(x => x.EntityId == id))) throw new InvalidOperationException("Director selected unknown actor IDs. Copy NPC id values from allowedActors; character names, claim keys and player are not actor IDs.");
+                    if (p.AdvanceMinutes == 0 && p.ActorIds.Any(id => w.Entities.Single(x => x.Id == id).LocationId != w.PlayerLocationId)) throw new InvalidOperationException("Director selected off-screen actors without advancing time. Use [] or only NPCs inCurrentScene when advanceMinutes is zero.");
                     ValidateAttempt(p.PlayerAttempt);
                 });
             if (draft.Applied.Add("clock")) { w.TimeMinutes += plan.AdvanceMinutes; await Save(); }
             var playerCheck = await Check("player-check", "player", plan.PlayerAttempt);
             var playerResult = await Step("player-result", "resolve", director,
-                new { actorId = "player", action = run.Action, attempt = plan.PlayerAttempt, check = playerCheck, world = DirectorContext(w, allFacts, draft.State, canon) },
+                new { actorId = "player", action = run.Action, attempt = plan.PlayerAttempt, check = playerCheck,
+                    pendingNpcActorIds = plan.ActorIds, controlHint = "Selected NPCs react next. Set needsPlayerDecision=false while awaiting their answer; true only if a new player choice must happen before they can react.",
+                    world = DirectorContext(w, allFacts, draft.State, canon) },
                 new Resolution($"You attempt: {run.Action}" + (playerCheck is null ? "" : playerCheck.Success ? " The attempt succeeds." : " The attempt fails."),
                     "scene", [], [], null, [], [], [], false), r => { ValidateResolution(w, "player", r); ValidateEffects(r, playerCheck); });
             if (draft.Applied.Add("player-result")) { Apply(w, "player", 0, playerResult, playerCheck); await Save(); }
@@ -170,7 +195,7 @@ public static class StoryEngine
                     var check = await Check(key + "-check", actorId, attempt);
                     var result = await Step(key + "-result", "resolve", director, new { actorId, proposal, attempt, check, world = DirectorContext(w, allFacts, draft.State, canon) },
                         new Resolution($"{entity.Name}: {proposal.Action}." + (string.IsNullOrEmpty(proposal.Speech) ? "" : $" “{proposal.Speech}”"),
-                            proposal.Visibility, proposal.Recipients, [entity.Id, entity.LocationId], null, [], [],
+                            proposal.Visibility, proposal.Recipients, new[] { entity.Id, entity.LocationId }.Where(id => id != "").ToArray(), null, [], [],
                             [new("long", "belief", proposal.Belief)], entity.LocationId == w.PlayerLocationId && beat == 1 && actorId == plan.ActorIds.LastOrDefault(id => w.Entities.Single(x => x.Id == id).LocationId == w.PlayerLocationId)),
                         r => {
                             ValidateResolution(w, actorId, r);
@@ -190,8 +215,8 @@ public static class StoryEngine
             }
             var newEvents = w.Events.Where(e => !StoryWorld.From(cp).Events.Any(old => old.Id == e.Id) && e.PerceivedBy.Contains("player")).ToArray();
             var narration = await Step("narration", "narrate", director,
-                new { action = run.Action, playerEvents = newEvents, state = draft.State, instruction = "Narrate only these observed events. End at the player's next decision. Never expose off-screen activity or private facts." },
-                new NarrativeReply("[SIMULATED TURN — deterministic agents, no AI provider used]\n\n" + string.Join("\n\n", newEvents.Select(e => e.Text)) + "\n\nWhat do you do?"), n => Text(n.Narrative, 16000));
+                new { action = run.Action, playerEvents = newEvents.Select(x => x with { SourceEvidence = null }), state = draft.State, instruction = "Narrate only these observed events. End at the player's next decision. Never expose off-screen activity or private facts." },
+                new NarrativeReply((director is FixtureAgentProvider ? "[SIMULATED TURN — deterministic agents, no AI provider used]\n\n" : "") + string.Join("\n\n", newEvents.Select(e => e.Text)) + "\n\nWhat do you do?"), n => Text(n.Narrative, 16000));
             draft.Narrative = narration.Narrative;
             var location = w.Entities.Single(x => x.Id == w.PlayerLocationId);
             draft.State = draft.State with { Location = location.Name, Time = $"{Json.Read<StoryState>(cp.StateJson).Time.Split(" · elapsed")[0]} · elapsed {w.TimeMinutes} minutes",
@@ -223,11 +248,22 @@ public static class StoryEngine
             {
                 var existing = draft.Steps.SingleOrDefault(x => x.Key == key);
                 if (existing is not null) return Json.Read<T>(existing.ResultJson);
-                var value = await provider.Generate<T>(new(task, context, example!, Instructions(task)), ct);
-                if (value is null) throw new InvalidOperationException("Model returned an empty result.");
-                validate(value);
-                draft.Steps.Add(new(key, task, Json.Write(value), DateTime.UtcNow)); await Save();
-                return value;
+                var instructions = Instructions(task) + (draft.ValidationFeedback.TryGetValue(key, out var feedback)
+                    ? "\nPrevious response failed validation: " + feedback + " Regenerate this task using only supplied IDs and the required fields/types." : "");
+                try
+                {
+                    var value = await provider.Generate<T>(new(task, context, example!, instructions), ct);
+                    if (value is null) throw new InvalidOperationException("Model returned an empty result.");
+                    validate(value);
+                    draft.ValidationFeedback.Remove(key);
+                    draft.Steps.Add(new(key, task, Json.Write(value), DateTime.UtcNow)); await Save();
+                    return value;
+                }
+                catch (Exception error) when (error is InvalidOperationException or System.Text.Json.JsonException)
+                {
+                    draft.ValidationFeedback[key] = error is System.Text.Json.JsonException ? "Invalid JSON field type or shape. Follow the supplied output example." : error.Message[..Math.Min(error.Message.Length, 1000)];
+                    await Save(); throw;
+                }
             }
             async Task<DiceCheck?> Check(string key, string actor, Attempt attempt)
             {
@@ -248,7 +284,12 @@ public static class StoryEngine
                 if (saved.Status != "cancelled") saved.Status = ex is OperationCanceledException ? "cancelled" : "paused";
                 saved.Error = saved.Status == "cancelled" ? "Cancelled. No partial turn was committed."
                     : ex is DbUpdateConcurrencyException ? "The branch changed. Cancel this draft and start from the new checkpoint."
-                    : ex is OperationCanceledException ? "Cancelled. No partial turn was committed." : "Generation paused. Check provider settings and retry; validated steps and rolls are preserved.";
+                    : ex is OperationCanceledException ? "Cancelled. No partial turn was committed."
+                    : ex is System.Text.Json.JsonException ? "Generation paused: the model returned invalid structured JSON. Retry or select another model; validated steps and rolls are preserved."
+                    : ex is InvalidOperationException && ex.Message.StartsWith("Model text") ? "Generation paused: model text is missing or exceeds its limit. Retry or select another model; validated steps and rolls are preserved."
+                    : ex is InvalidOperationException && (ex.Message.StartsWith("Invalid ") || ex.Message.StartsWith("Unknown ") || ex.Message.StartsWith("Director selected") || ex.Message.StartsWith("Recipients must") || ex.Message.StartsWith("A private proposal") || ex.Message.StartsWith("A directed proposal") || ex.Message.StartsWith("A failed check"))
+                        ? "Generation paused: " + ex.Message + " Validated steps and rolls are preserved."
+                    : "Generation paused. Check provider settings and retry; validated steps and rolls are preserved.";
                 await db.SaveChangesAsync(CancellationToken.None);
             }
             // Cancellation may win between the pre-save check and EF's concurrency-token update.
@@ -264,10 +305,10 @@ public static class StoryEngine
 
     private static string Instructions(string task) => task switch
     {
-        "plan" => "You are the master director. Select relevant actorIds within limits, prioritizing the current scene. Select off-screen actors only when advancing story time. Advance minutes only when the player's action warrants it. Assess the player's stated attempt without inventing player decisions. Routine actions need no roll; uncertain or contested attempts use a difficulty 1–40 with named stat/power, action and environment modifiers (-20..20). Use established abilities and relevant precedents. Fix these values before any roll.",
+        "plan" => "You are the master director. Select relevant actorIds within limits, prioritizing NPCs explicitly addressed by the player and those present at an established destination the player is approaching. Copy exact NPC ids from world.allowedActors; never select player, character names or claim keys. NPC speech/reactions will be generated by their separate character sessions, so include the addressed NPCs rather than writing their responses yourself. Select off-screen actors only when advancing story time. Advance minutes only when the player's action warrants it. Assess the player's stated attempt without inventing player decisions. Routine actions need no roll; uncertain or contested attempts use a difficulty 1–40 with named stat/power, action and environment modifiers (-20..20). Use established abilities and relevant precedents. Fix these values before any roll.",
         "character" => "Act as this character with autonomy. Read only your provided perceptions and memories. Do not assume knowledge of unobserved events. Author-edited memories take priority over outdated character summaries. Propose speech and an attempted action pursuing your goal; never declare contested success or choose player actions. Visibility is scene, private (only you), or direct (named present recipients). Keep secrets out of public speech unless you intentionally reveal them. Return short goals, beliefs, emotion, intention and a concise decision summary, no chain of thought.",
         "assess" => "You are the director. Preserve the character's proposed motives and assess the attempt. Resolve routine actions without dice. For uncertain or contested actions, establish difficulty 1–40 and named modifiers for established stats/power, actions and environment (-20..20). modifiers is an array of {label:string,value:integer}. Explain the ruling using relevant precedents. No roll has happened yet.",
-        "resolve" => "You are the director resolving the stated attempt. Preserve autonomous character motives; do not choose any further player actions. A supplied check is authoritative: total >= difficulty succeeds; natural 1/20 add flavor only. Never change the roll, modifiers or difficulty. Failed checks cannot move the actor, create entities or establish successful relationships. Narrate the actual outcome. Scene visibility reaches only present observers, private only the actor, direct only named present recipients. Never broadcast secrets or private proposals. MoveToId moves only this actor to an established place. New entities and relationships must be supported by this occurrence. connections is an array of {sourceId:string,targetId:string,kind:string}; newEntities is an array of {id:string,name:string,kind:character|being|object|place,locationId:string,description:string}; descriptions contain observable traits only. memories is an array of {term:short|long,kind:fact|belief|rumor,text:string}. Memory suggestions concern this actor's own beliefs or rumors, not unobserved facts. NeedsPlayerDecision stops scene reactions at a meaningful player choice.",
+        "resolve" => "You are the director resolving the stated attempt. Preserve autonomous character motives; do not choose any further player actions. When actorId is player, resolve only the player's stated attempt: do not write independent NPC speech or actions. Those follow through the selected NPC character sessions. When resolving an NPC proposal, preserve its speech and motives. A supplied check is authoritative: total >= difficulty succeeds; natural 1/20 add flavor only. Never change the roll, modifiers or difficulty. Failed checks cannot move the actor, create entities or establish successful relationships. Narrate the actual outcome. Scene visibility reaches only present observers, private only the actor, direct only named present recipients. Never broadcast secrets or private proposals. MoveToId moves only this actor to an established place. New entities and relationships must be supported by this occurrence. connections is an array of {sourceId:string,targetId:string,kind:string}; newEntities is an array of {id:string,name:string,kind:character|being|object|place,locationId:string,description:string}; descriptions contain observable traits only. memories is an array of {term:short|long,kind:fact|belief|rumor,text:string}. Memory suggestions concern this actor's own beliefs or rumors, not unobserved facts. NeedsPlayerDecision stops scene reactions only when a genuinely new player choice must occur BEFORE any pending NPC reaction. Set it false when the player has spoken or asked a question and is awaiting selected NPC responses. Waiting for their reply is not an additional player decision. For an NPC result, set it true only when its response actually asks the player to choose.",
         "narrate" => "Narrate only the supplied player-observed events and their consequences. Never expose secrets, unobserved occurrences, or choose the player's next actions. End with a meaningful player decision. No extra world changes may be introduced in narration.",
         _ => throw new InvalidOperationException("Unknown agent task.")
     };
@@ -275,7 +316,7 @@ public static class StoryEngine
     public static string[] Audience(StoryWorld w, string actor, string visibility, string[] recipients)
     {
         var location = actor == "player" ? w.PlayerLocationId : w.Entities.Single(x => x.Id == actor).LocationId;
-        var present = w.Characters.Where(c => w.Entities.Single(e => e.Id == c.EntityId).LocationId == location).Select(c => c.EntityId).ToList();
+        var present = w.Characters.Where(c => location != "" && w.Entities.Single(e => e.Id == c.EntityId).LocationId == location).Select(c => c.EntityId).ToList();
         if (location == w.PlayerLocationId) present.Add("player");
         if (recipients is null || recipients.Length > 10 || recipients.Any(x => !present.Contains(x))) throw new InvalidOperationException("Recipients must be present and able to perceive the event.");
         return visibility switch
@@ -297,7 +338,8 @@ public static class StoryEngine
         Text(r.Text, 3000); Audience(w, actor, r.Visibility, r.Recipients);
         if (r.EntityIds is null || r.Connections is null || r.NewEntities is null || r.Memories is null || r.EntityIds.Length > 30 || r.Connections.Length > 12 || r.NewEntities.Length > 8 || r.Memories.Length > 4)
             throw new InvalidOperationException("Invalid outcome arrays.");
-        if (w.Entities.Count + r.NewEntities.Length > 500) throw new InvalidOperationException("This slice supports up to 500 world entities.");
+        if (r.NewEntities.Length > 0 && w.Entities.Count + r.NewEntities.Length > 5000)
+            throw new InvalidOperationException("The live turn cannot add entities beyond the 5,000 entity limit. Existing imported worlds can still continue without new entities.");
         var ids = w.Entities.Select(x => x.Id).ToHashSet();
         foreach (var e in r.NewEntities)
         {
@@ -317,7 +359,7 @@ public static class StoryEngine
         // A failed attempt cannot assert state effects, relationships or new world entities.
         ValidateEffects(r, check);
         var ev = new WorldEvent(Guid.NewGuid().ToString("N"), w.Events.Count, beat, actor, location, r.Text, audience,
-            r.EntityIds.Concat(r.NewEntities.Select(x => x.Id)).Concat(actor == "director" ? [] : new[] { actor }).Append(location).Distinct().ToArray(), $"{w.TimeMinutes} minutes", r.Visibility);
+            r.EntityIds.Concat(r.NewEntities.Select(x => x.Id)).Concat(actor == "director" ? [] : new[] { actor }).Append(location).Where(id => id != "").Distinct().ToArray(), $"{w.TimeMinutes} minutes", r.Visibility);
         w.Events.Add(ev);
         w.Entities.AddRange(r.NewEntities.Select(e => e with { KnownTo = audience }));
         foreach (var entity in r.NewEntities.Where(x => x.Kind is "character" or "being"))

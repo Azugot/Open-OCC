@@ -52,6 +52,8 @@ public static class CampaignService
         }
         var messages = await db.Messages.AsNoTracking().Where(x => x.BranchId == branchId && x.Sequence <= at.Sequence).ToListAsync(ct);
         foreach (var m in messages) db.Messages.Add(new Message { BranchId = branch.Id, Sequence = m.Sequence, Role = m.Role, Content = m.Content, Provider = m.Provider, Model = m.Model, CreatedAt = m.CreatedAt });
+        var histories = await db.ImportedHistory.AsNoTracking().Where(x => x.BranchId == branchId && x.EffectiveSequence <= at.Sequence).ToListAsync(ct);
+        foreach (var h in histories) db.ImportedHistory.Add(new() { BranchId = branch.Id, SourceId = h.SourceId, JobId = h.JobId, EffectiveSequence = h.EffectiveSequence });
         var facts = await db.Facts.AsNoTracking().Where(x => x.BranchId == branchId && x.ReviewStatus == "accepted" && x.EffectiveSequence <= at.Sequence).ToListAsync(ct);
         foreach (var fact in facts)
         {

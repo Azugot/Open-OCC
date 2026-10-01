@@ -61,6 +61,15 @@ public class ReconstructionTests : IAsyncLifetime
         var error = Assert.Throws<InvalidOperationException>(() => Reconstruction.ValidateClaim(claim, [0], []));
         Assert.Contains(expected, error.Message);
     }
+    [Fact]
+    public void ReviewIssueRepairExplainsUnsupportedEvidenceAndMalformedFields()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() => Reconstruction.ValidateIssue(new("audit", "Conflict", true, [9]), [2, 3]));
+        Assert.Contains("[2,3]", error.Message);
+        Assert.Contains("contextual metadata", error.Message);
+        Assert.Contains("text", Assert.Throws<InvalidOperationException>(() => Reconstruction.ValidateIssue(new("audit", "", true, []), [2])).Message);
+        Reconstruction.ValidateIssue(new("audit", "Needs author review", true, []), [2]);
+    }
     private static int[] Evidence(ProviderPrompt prompt)
     {
         var text = prompt.Input.Split("EVIDENCE:\n")[1].Split("\nRELATED LEDGER:")[0];
@@ -73,7 +82,7 @@ public class ReconstructionTests : IAsyncLifetime
     {
         var evidence = Evidence(prompt); var cite = evidence.Take(1).ToArray();
         var state = new StoryState("Harbor", "Day 7 · noon", "Cross the bay", "Rested", new() { ["Navigation"] = "F · 2/5" }, new() { ["Rations"] = 2 }, ["Mara", "Lyra"]);
-        var scene = new ResumeProposal(state, cite, "Pack two rations", true, []);
+        var scene = new ResumeProposal(state, cite, "Pack two rations", true, [], "Player");
         if (prompt.Input.StartsWith("STAGE: audit")) return new([], [], null, "Evidence and ending verified.", []);
         if (prompt.Input.StartsWith("STAGE: reconcile")) return new([], [], null, "Ledger reconciled.", []);
         if (prompt.Input.StartsWith("STAGE: resume")) return new([], [], scene, "Mara and Lyra are ready to cross the bay at noon.", []);
@@ -131,12 +140,54 @@ public class ReconstructionTests : IAsyncLifetime
         Assert.All(pages, p => Assert.True(ImportContext.Evidence(rows.Where(x => p.EvidenceOrdinals.Contains(x.Ordinal))).Length <= 3500));
     }
     [Fact]
+    public void DurableCitationsAreCompleteWhileModelReviewIsWindowed()
+    {
+        var rows = Enumerable.Range(0, 180).Select(i => new ImportSegment { Ordinal = i, Text = new string('x', 80) }).ToArray();
+        var claim = Claim("fact:history", "fact", "A recurring fact.", rows.Select(x => x.Ordinal).ToArray());
+        var allowed = rows.Select(x => x.Ordinal).ToHashSet();
+        Reconstruction.ValidateClaim(claim, allowed, [], stored: true);
+        Assert.Throws<InvalidOperationException>(() => Reconstruction.ValidateClaim(claim, allowed, []));
+        var proposal = new ImportProposal { ContentJson = Json.Write(claim) };
+        var windows = Reconstruction.ReviewWindows([proposal], rows, null, 24000);
+        Assert.Equal(allowed.Order(), windows.SelectMany(w => w.EvidenceOrdinals).Distinct().Order());
+        Assert.All(windows, window =>
+        {
+            Assert.InRange(window.EvidenceOrdinals.Length, 1, 64);
+            var projected = Reconstruction.WindowClaim(claim, window.EvidenceOrdinals);
+            Reconstruction.ValidateClaim(projected, window.EvidenceOrdinals.ToHashSet(), []);
+            Assert.True(ImportContext.Evidence(rows.Where(r => window.EvidenceOrdinals.Contains(r.Ordinal))).Length + Json.Write(projected).Length <= 24000);
+        });
+        Assert.Equal(180, claim.EvidenceOrdinals.Length);
+    }
+    [Fact]
+    public async Task WideInputBudgetReservesContextInsteadOfExtractingWholeDocumentsAtOnce()
+    {
+        await using var db = Db();
+        var job = await Create(db, Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("A navigator waits by the harbor. ", 3000))));
+        job.InputCharacterLimit = 120000;
+        await Reconstruction.Step(db, job, null, default);
+        var extractions = 0;
+        var model = new Scripted(prompt =>
+        {
+            if (prompt.Input.StartsWith("STAGE: extract"))
+            {
+                extractions++;
+                var text = prompt.Input.Split("EVIDENCE:\n")[1].Split("\nRELATED LEDGER:")[0];
+                Assert.True(text.Length <= 12000, "Source windows plus overlap must remain bounded even with a wide context budget.");
+            }
+            return Respond(prompt);
+        });
+        await Complete(db, job, model);
+        Assert.Equal(job.Total, job.Processed);
+        Assert.True(extractions >= 10);
+    }
+    [Fact]
     public async Task QuoteHeavyLongTurnsFitEveryStoredCitationAndInputWindow()
     {
         await using var db = Db(); var text = string.Concat(Enumerable.Repeat("\"quote\" \\ path\t\n", 1400));
         var job = await Create(db, Encoding.UTF8.GetBytes(Json.Write(new { messages = new[] { new { role = "assistant", content = text } } })), "quoted.json");
         await Reconstruction.Step(db, job, null, default);
-        var passages = await db.Segments.OrderBy(x => x.Ordinal).ToArrayAsync();
+        var passages = await ImportDocument.Load(db, job, db.Segments.OrderBy(x => x.Ordinal), default);
         Assert.Equal(text, string.Concat(passages.Select(x => x.Text)));
         var model = new Scripted(p => {
             Assert.True(p.Instructions.Length + p.Input.Length + Reconstruction.Schema.GetRawText().Length <= job.InputCharacterLimit);
@@ -152,8 +203,9 @@ public class ReconstructionTests : IAsyncLifetime
         await using var db = Db(); var job = await Create(db, Encoding.UTF8.GetBytes(string.Join("\n\n", paragraphs)));
         await Reconstruction.Step(db, job, null, default);
         var sections = await db.ImportSections.Where(x => x.JobId == job.Id).OrderBy(x => x.Ordinal).ToArrayAsync();
-        var passages = await db.Segments.Where(x => x.JobId == job.Id).OrderBy(x => x.Ordinal).ToArrayAsync();
-        Assert.Equal(paragraphs, passages.Select(x => x.Text));
+        var passages = await ImportDocument.Load(db, job, db.Segments.Where(x => x.JobId == job.Id).OrderBy(x => x.Ordinal), default);
+        Assert.Equal(string.Join("\n\n", paragraphs), string.Concat(passages.Select(x => x.Text)));
+        Assert.True(passages.Length < paragraphs.Length / 5);
         Assert.True(passages.Where(x => x.Ordinal < sections[0].End).Sum(x => x.Text.Length) > 6000);
         var prompts = new List<ProviderPrompt>();
         var model = new Scripted(p => { prompts.Add(p); return new([], [], null, "Mara speaks with Lyra.", []); });
@@ -211,22 +263,23 @@ public class ReconstructionTests : IAsyncLifetime
         }
         await using var db = Db(); var job = await Create(db, stream.ToArray(), "large.docx");
         await Complete(db, job);
-        Assert.True(job.Total > 450); Assert.Equal(job.Total, job.Processed); Assert.True(job.ReviewCompleted);
+        Assert.InRange(job.Total, 2, 100); Assert.Equal(job.Total, job.Processed); Assert.True(job.ReviewCompleted);
         Assert.Empty(await db.Facts.ToListAsync());
         Assert.Equal(10, await db.ImportProposals.CountAsync(x => x.JobId == job.Id && x.Current));
-        Assert.Contains(await db.Segments.ToListAsync(), x => x.Artifact);
+        Assert.Contains("⚔️", (await db.Sources.SingleAsync()).NormalizedText);
         Assert.Contains(await db.Segments.ToListAsync(), x => x.Section == "table");
         var resume = Json.Read<ResumeProposal>(job.ResumeJson!); Assert.Equal("Harbor", resume.State!.Location); Assert.True(resume.ReplyPending);
         await ImportReview.Approve(db, job.Id, new(job.ExpectedCheckpointId, job.ProposalRevision), default);
-        Assert.Equal("approved", job.Status); Assert.Equal(2, await db.Characters.CountAsync()); Assert.Single(await db.Relationships.ToListAsync()); Assert.Single(await db.Knowledge.ToListAsync());
-        Assert.True(await db.Messages.CountAsync() > 450); Assert.Contains(await db.Facts.ToListAsync(), x => x.Kind == "secret" && x.Visibility == "narrator");
-        Assert.Single(await db.WorldVersions.ToListAsync());
+        Assert.Equal("approved", job.Status); Assert.Equal(3, await db.Characters.CountAsync()); Assert.Single(await db.Relationships.ToListAsync()); Assert.Single(await db.Knowledge.ToListAsync());
+        Assert.Equal(2, await db.Messages.CountAsync()); Assert.Single(await db.ImportedHistory.ToListAsync());
+        Assert.All(await db.Segments.ToListAsync(), x => Assert.Empty(x.Text));
+        Assert.Contains(await db.Facts.ToListAsync(), x => x.Kind == "secret" && x.Visibility == "narrator");
         var branch = await db.Branches.SingleAsync(); var state = Json.Read<StoryState>((await db.Checkpoints.SingleAsync(x => x.Id == branch.HeadCheckpointId)).StateJson);
         Assert.Equal(2, state.Inventory["Rations"]);
         var exported = await PortabilityService.Export(db, branch.CampaignId, default);
         var restored = await PortabilityService.Import(db, Json.Read<PortableExport>(Json.Write(exported)), "Restored", default);
         Assert.Equal(10, await db.ImportProposals.CountAsync(x => x.Current && x.JobId != job.Id));
-        Assert.Equal(2, await db.Characters.CountAsync(x => x.CampaignId == restored.CampaignId));
+        Assert.Equal(3, await db.Characters.CountAsync(x => x.CampaignId == restored.CampaignId));
         Assert.Equal(state, Json.Read<StoryState>((await db.Checkpoints.SingleAsync(x => x.Id == restored.HeadCheckpointId)).StateJson), new StateComparer());
     }
     private sealed class StateComparer : IEqualityComparer<StoryState>
