@@ -375,4 +375,75 @@ public class ReconstructionTests : IAsyncLifetime
         await Assert.ThrowsAsync<InvalidOperationException>(() => ImportReview.Approve(db, job.Id, new(job.ExpectedCheckpointId, job.ProposalRevision), default));
         Assert.Empty(await db.Facts.ToListAsync());
     }
+    [Fact]
+    public async Task AuthorCorrectionUpdatesClaimCheckpointAndIssueWithoutChangingSourceOrBranch()
+    {
+        await using var db = Db(); var job = await Create(db); await Complete(db, job);
+        var source = await db.Sources.SingleAsync(); var original = source.Bytes.ToArray();
+        var skill = await db.ImportProposals.SingleAsync(x => x.Current && x.Key == "skill:navigation");
+        var claim = Json.Read<ImportClaim>(skill.ContentJson);
+        db.ImportIssues.Add(new ImportIssue { JobId = job.Id, Code = "state:" + claim.Key, Blocking = true, Resolution = "Set to 7", Text = "Skill missing" });
+        await db.SaveChangesAsync();
+        var revision = job.ProposalRevision;
+        await ImportReview.SaveProposal(db, job.Id, skill.Id, new(revision, claim with { Value = "7", Text = "Navigation is rated 7." }, false, true), default);
+        Assert.Equal(revision + 1, job.ProposalRevision);
+        var edited = await db.ImportProposals.SingleAsync(x => x.Current && x.Key == claim.Key);
+        Assert.Equal("7", Json.Read<ImportClaim>(edited.ContentJson).Value);
+        Assert.False(skill.Current); Assert.Equal(Json.Write(claim), skill.ContentJson);
+        var resume = Json.Read<ResumeProposal>(job.ResumeJson!);
+        Assert.Equal("7", resume.State!.Skills[claim.Subject]);
+        Assert.Equal("7", Json.Read<StoryState>(job.ProposedStateJson!).Skills[claim.Subject]);
+        Assert.Contains("= 7", (await db.ImportIssues.SingleAsync()).Resolution);
+        Assert.Empty(ImportReview.StateConflicts(await db.ImportProposals.ToListAsync(), resume));
+        Assert.Equal(original, source.Bytes); Assert.Equal(job.ExpectedCheckpointId, (await db.Branches.SingleAsync()).HeadCheckpointId);
+        await ImportReview.Approve(db, job.Id, new(job.ExpectedCheckpointId, job.ProposalRevision), default);
+        var head = await db.Checkpoints.SingleAsync(x => x.Id == (db.Branches.Local.Single()).HeadCheckpointId);
+        Assert.Equal("7", Json.Read<StoryState>(head.StateJson).Skills[claim.Subject]);
+        Assert.Contains(await db.Facts.ToListAsync(), x => x.Text == "Navigation is rated 7.");
+    }
+    [Fact]
+    public async Task AcknowledgmentDoesNotHideAllCheckpointConflictsAndExcludedHistoryIsIgnored()
+    {
+        await using var db = Db(); var job = await Create(db); await Complete(db, job);
+        var resume = Json.Read<ResumeProposal>(job.ResumeJson!);
+        resume.State!.Skills.Clear(); resume.State.Inventory.Clear(); job.ResumeJson = Json.Write(resume);
+        db.ImportIssues.Add(new ImportIssue { JobId = job.Id, Code = "state:skill:navigation", Blocking = true, Text = "Mismatch", Resolution = "Change it to 7" });
+        await db.SaveChangesAsync();
+        var rows = await db.ImportProposals.ToListAsync();
+        var conflicts = ImportReview.StateConflicts(rows, resume);
+        Assert.Equal(2, conflicts.Length); Assert.All(conflicts, x => Assert.Null(x.Checkpoint));
+        Assert.Contains(conflicts, x => x.Subject == "Navigation" && x.Proposed == "F · 2/5");
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => ImportReview.Approve(db, job.Id, new(job.ExpectedCheckpointId, job.ProposalRevision), default));
+        Assert.Contains("Navigation", error.Message); Assert.Contains("Rations", error.Message); Assert.Contains("missing", error.Message);
+        rows.Single(x => x.Key == "skill:navigation").Excluded = true;
+        rows.Single(x => x.Key == "inventory:rations").Current = false;
+        Assert.Empty(ImportReview.StateConflicts(rows, resume));
+        Assert.Empty(await db.Facts.ToListAsync());
+    }
+    [Fact]
+    public async Task InventoryCorrectionIsAtomicAndStaleOrInvalidRequestsPreserveIt()
+    {
+        await using var db = Db(); var job = await Create(db); await Complete(db, job);
+        var row = await db.ImportProposals.SingleAsync(x => x.Current && x.Key == "inventory:rations");
+        var claim = Json.Read<ImportClaim>(row.ContentJson);
+        var oldRevision = job.ProposalRevision;
+        await ImportReview.SaveProposal(db, job.Id, row.Id, new(oldRevision, claim with { Amount = 7, Text = "Seven rations remain." }, false, true), default);
+        row = await db.ImportProposals.SingleAsync(x => x.Current && x.Key == claim.Key);
+        var saved = job.ResumeJson; var count = await db.ImportProposals.CountAsync();
+        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => ImportReview.SaveProposal(db, job.Id, row.Id, new(oldRevision, claim, false, true), default));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => ImportReview.SaveProposal(db, job.Id, row.Id, new(job.ProposalRevision, claim, true, true), default));
+        Assert.Equal(saved, job.ResumeJson); Assert.Equal(count, await db.ImportProposals.CountAsync());
+        Assert.Equal(7, Json.Read<ResumeProposal>(job.ResumeJson!).State!.Inventory[claim.Subject]);
+    }
+    [Fact]
+    public async Task SyncRejectsContradictoryCurrentClaimsInsteadOfSilentlyOverwritingThem()
+    {
+        await using var db = Db(); var job = await Create(db); await Complete(db, job);
+        var row = await db.ImportProposals.SingleAsync(x => x.Current && x.Key == "skill:navigation");
+        var claim = Json.Read<ImportClaim>(row.ContentJson);
+        db.ImportProposals.Add(new ImportProposal { JobId = job.Id, Key = "skill:duplicate", Category = "skill", ContentJson = Json.Write(claim with { Key = "skill:duplicate" }) });
+        await db.SaveChangesAsync(); var before = job.ResumeJson; var revision = job.ProposalRevision;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => ImportReview.SaveProposal(db, job.Id, row.Id, new(revision, claim with { Value = "7" }, false, true), default));
+        Assert.Equal(before, job.ResumeJson); Assert.Equal(revision, job.ProposalRevision); Assert.True(row.Current);
+    }
 }

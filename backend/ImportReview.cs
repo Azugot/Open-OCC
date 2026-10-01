@@ -2,6 +2,8 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Story;
 
+public record ImportStateConflict(Guid ProposalId, string Key, string Category, string Subject, string Proposed, string? Checkpoint, string Text);
+
 public static class ImportReview
 {
     public static void Map(WebApplication app)
@@ -9,8 +11,23 @@ public static class ImportReview
         app.MapGet("/api/imports/{id:guid}/draft", async (Guid id, StoryDb db, CancellationToken ct) =>
         {
             var job = await Job(db, id, ct);
+            var current = await db.ImportProposals.Where(x => x.JobId == id && x.Current && !x.Excluded).ToListAsync(ct);
+            var resume = job.ResumeJson is null ? null : Json.Read<ResumeProposal>(job.ResumeJson);
+            var conflicts = StateConflicts(current, resume);
+            var validationErrors = new List<string>();
+            if (job.Status == "review" && job.ReviewCompleted && resume?.State is not null)
+            {
+                try
+                {
+                    var head = await db.Checkpoints.SingleAsync(x => x.Id == job.ExpectedCheckpointId, ct);
+                    var blocks = await db.Segments.Where(x => x.JobId == id).ToDictionaryAsync(x => x.Ordinal, ct);
+                    ImportedWorldCompiler.Compile(StoryWorld.From(head), Json.Read<StoryState>(head.StateJson), job, resume,
+                        current.Select(x => Json.Read<ImportClaim>(x.ContentJson)).ToArray(), blocks);
+                }
+                catch (InvalidOperationException e) { validationErrors.Add(e.Message); }
+            }
             var source = await db.Sources.Where(x => x.Id == job.SourceId).Select(x => new { x.Id, x.FileName, x.Sha256, size = x.Bytes.Length }).SingleAsync(ct);
-            return Results.Ok(new { job, source, resume = job.ResumeJson is null ? null : Json.Read<ResumeProposal>(job.ResumeJson),
+            return Results.Ok(new { job, source, resume, conflicts, validationErrors,
                 issues = await db.ImportIssues.Where(x => x.JobId == id).OrderByDescending(x => x.Blocking).ThenBy(x => x.Code).ToListAsync(ct),
                 groups = await db.ImportProposals.Where(x => x.JobId == id && x.Current).GroupBy(x => x.Category).Select(x => new { category = x.Key, count = x.Count() }).ToListAsync(ct),
                 sections = await db.ImportSections.CountAsync(x => x.JobId == id, ct) });
@@ -39,14 +56,7 @@ public static class ImportReview
         });
         app.MapPut("/api/imports/{id:guid}/proposals/{proposalId:guid}", async (Guid id, Guid proposalId, EditProposal request, StoryDb db, CancellationToken ct) =>
         {
-            var job = await Editable(db, id, request.Revision, ct);
-            var row = await db.ImportProposals.SingleOrDefaultAsync(x => x.Id == proposalId && x.JobId == id && x.Current, ct) ?? throw new KeyNotFoundException();
-            if (request.Claim.Key != row.Key || request.Claim.Category != row.Category) throw new InvalidOperationException("A claim's stable key and category cannot be changed.");
-            var ordinals = (await db.Segments.Where(x => x.JobId == id).Select(x => x.Ordinal).ToArrayAsync(ct)).ToHashSet();
-            Reconstruction.ValidateClaim(request.Claim, ordinals, (await db.ImportProposals.Where(x => x.JobId == id).Select(x => x.Key).ToArrayAsync(ct)).ToHashSet(), stored: true);
-            row.Current = false; job.ProposalRevision++;
-            db.ImportProposals.Add(new ImportProposal { JobId = id, Key = row.Key, Category = row.Category, Revision = job.ProposalRevision, ContentJson = Json.Write(request.Claim), Excluded = request.Excluded });
-            await db.SaveChangesAsync(ct); return Results.Ok(new { revision = job.ProposalRevision });
+            return Results.Ok(new { revision = await SaveProposal(db, id, proposalId, request, ct) });
         });
         app.MapPut("/api/imports/{id:guid}/issues/{issueId:guid}", async (Guid id, Guid issueId, ResolveImportIssue request, StoryDb db, CancellationToken ct) =>
         {
@@ -104,6 +114,61 @@ public static class ImportReview
         if (revision != job.ProposalRevision) throw new DbUpdateConcurrencyException("This proposal changed. Reload before saving.");
         return job;
     }
+    public static ImportStateConflict[] StateConflicts(IEnumerable<ImportProposal> rows, ResumeProposal? resume)
+    {
+        var conflicts = new List<ImportStateConflict>();
+        foreach (var row in rows.Where(x => x.Current && !x.Excluded))
+        {
+            var claim = Json.Read<ImportClaim>(row.ContentJson);
+            if (claim.Disposition != "current" || claim.Category is not ("skill" or "inventory")) continue;
+            var proposed = claim.Category == "skill" ? claim.Value : claim.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            string? actual = null;
+            if (claim.Category == "skill" && resume?.State?.Skills.TryGetValue(claim.Subject, out var rank) == true) actual = rank;
+            if (claim.Category == "inventory" && resume?.State?.Inventory.TryGetValue(claim.Subject, out var amount) == true)
+                actual = amount.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            // An absent inventory item represents a quantity of zero.
+            if (claim.Category == "inventory" && actual is null && claim.Amount == 0) continue;
+            if (actual != proposed) conflicts.Add(new(row.Id, claim.Key, claim.Category, claim.Subject, proposed, actual,
+                $"{claim.Subject}: proposal is {proposed}; resume checkpoint is {actual ?? "missing"}. Save the corrected proposal with ‘Also update resume checkpoint’, edit the checkpoint, or exclude the proposal. Review notes do not change these values."));
+        }
+        return conflicts.ToArray();
+    }
+    public static async Task<int> SaveProposal(StoryDb db, Guid id, Guid proposalId, EditProposal request, CancellationToken ct)
+    {
+        var job = await Editable(db, id, request.Revision, ct);
+        var row = await db.ImportProposals.SingleOrDefaultAsync(x => x.Id == proposalId && x.JobId == id && x.Current, ct) ?? throw new KeyNotFoundException();
+        if (request.Claim.Key != row.Key || request.Claim.Category != row.Category) throw new InvalidOperationException("A claim's stable key and category cannot be changed.");
+        var ordinals = (await db.Segments.Where(x => x.JobId == id).Select(x => x.Ordinal).ToArrayAsync(ct)).ToHashSet();
+        Reconstruction.ValidateClaim(request.Claim, ordinals, (await db.ImportProposals.Where(x => x.JobId == id).Select(x => x.Key).ToArrayAsync(ct)).ToHashSet(), stored: true);
+        Reconstruction.ValidateRanges(request.Claim, (await db.Segments.Where(x => x.JobId == id).ToArrayAsync(ct)));
+        if (request.SyncResume)
+        {
+            var claim = request.Claim;
+            if (request.Excluded || claim.Disposition != "current" || claim.Category is not ("skill" or "inventory"))
+                throw new InvalidOperationException("Only included current skill or inventory proposals can update the resume checkpoint.");
+            var resume = job.ResumeJson is null ? null : Json.Read<ResumeProposal>(job.ResumeJson);
+            if (resume?.State is null) throw new InvalidOperationException("Provide a resume checkpoint before synchronizing a proposal.");
+            var skills = new Dictionary<string, string>(resume.State.Skills);
+            var inventory = new Dictionary<string, int>(resume.State.Inventory);
+            var old = Json.Read<ImportClaim>(row.ContentJson);
+            if (claim.Category == "skill") { if (old.Subject != claim.Subject) skills.Remove(old.Subject); skills[claim.Subject] = claim.Value; }
+            else { if (old.Subject != claim.Subject) inventory.Remove(old.Subject); inventory[claim.Subject] = claim.Amount; }
+            resume = resume with { State = resume.State with { Skills = skills, Inventory = inventory } };
+            Reconstruction.ValidateResume(resume, ordinals);
+            // Conflicting current claims must be resolved explicitly, rather than silently replacing one another.
+            var peers = await db.ImportProposals.Where(x => x.JobId == id && x.Current && !x.Excluded && x.Id != row.Id).ToListAsync(ct);
+            if (StateConflicts(peers, resume).Any(x => x.Category == claim.Category && x.Subject == claim.Subject))
+                throw new InvalidOperationException($"Another current proposal disagrees about {claim.Subject}. Correct or exclude the duplicate first.");
+            job.ResumeJson = Json.Write(resume); job.ProposedStateJson = Json.Write(resume.State);
+            var issue = await db.ImportIssues.SingleOrDefaultAsync(x => x.JobId == id && x.Code == "state:" + claim.Key, ct);
+            if (issue is not null) issue.Resolution = $"Author correction saved in proposal and resume checkpoint: {claim.Subject} = {(claim.Category == "skill" ? claim.Value : claim.Amount.ToString())}.";
+        }
+        row.Current = false; job.ProposalRevision++;
+        db.ImportProposals.Add(new ImportProposal { JobId = id, Key = row.Key, Category = row.Category, Revision = job.ProposalRevision, ContentJson = Json.Write(request.Claim), Excluded = request.Excluded });
+        // One SaveChanges transaction commits the claim, checkpoint, acknowledgment and revision together.
+        await db.SaveChangesAsync(ct);
+        return job.ProposalRevision;
+    }
     public static async Task Approve(StoryDb db, Guid id, ApproveReconstruction request, CancellationToken ct)
     {
         await using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
@@ -131,9 +196,8 @@ public static class ImportReview
             Reconstruction.ValidateRanges(c, segments.ToArray());
         }
         Reconstruction.ValidateResume(resume, byOrdinal.Keys.ToHashSet());
-        foreach (var c in claims.Where(x => x.Disposition == "current"))
-            if (c.Category == "inventory" && resume.State.Inventory.GetValueOrDefault(c.Subject) != c.Amount || c.Category == "skill" && resume.State.Skills.GetValueOrDefault(c.Subject) != c.Value)
-                throw new InvalidOperationException($"The resume state disagrees with {c.Key}. Correct or exclude the claim before approval.");
+        var conflicts = StateConflicts(rows, resume);
+        if (conflicts.Length > 0) throw new InvalidOperationException(string.Join("\n", conflicts.Select(x => x.Text)));
         var importedWorld = ImportedWorldCompiler.Compile(StoryWorld.From(head), Json.Read<StoryState>(head.StateJson), job, resume, claims, byOrdinal);
         var checkpoint = new Checkpoint { BranchId = branch.Id, Sequence = head.Sequence + 1, Label = "Agent-reviewed import", StateJson = Json.Write(resume.State), WorldJson = Json.Write(importedWorld) };
         db.ImportedHistory.Add(new ImportedHistory { BranchId = branch.Id, SourceId = job.SourceId, JobId = job.Id, EffectiveSequence = checkpoint.Sequence });

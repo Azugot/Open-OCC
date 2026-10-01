@@ -13,7 +13,7 @@ public record AgentResult(ImportClaim[] Claims, ReconstructionIssue[] Issues, Re
 public record ReviewWindow(Guid[] ProposalIds, int[] EvidenceOrdinals, bool ReviewScene);
 public record ImportOptions(int InputCharacterLimit = 24000, int OutputTokenLimit = 3000, int MaxCalls = 100);
 public record RetryImport(string? Provider = null, string? Model = null, int? MaxCalls = null, int? InputCharacterLimit = null, int? OutputTokenLimit = null);
-public record EditProposal(int Revision, ImportClaim Claim, bool Excluded);
+public record EditProposal(int Revision, ImportClaim Claim, bool Excluded, bool SyncResume = false);
 public record ResolveImportIssue(int Revision, string Resolution);
 public record EditResume(int Revision, ResumeProposal Resume);
 public record ApproveReconstruction(Guid ExpectedCheckpointId, int Revision);

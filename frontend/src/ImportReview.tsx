@@ -8,7 +8,8 @@ type Claim = { key: string; category: string; text: string; subject: string; tar
 type Proposal = { proposal: { id: string; revision: number; current: boolean; excluded: boolean }; claim: Claim };
 type Resume = { state: State | null; evidenceOrdinals: number[]; latestAction: string; replyPending: boolean; missing: string[]; playerCharacterName?: string | null };
 type Issue = { id: string; code: string; text: string; blocking: boolean; evidenceJson: string; resolution: string };
-type Draft = { job: Job; source: { id: string; fileName: string; sha256: string }; resume: Resume | null; issues: Issue[]; groups: { category: string; count: number }[]; sections: number };
+type StateConflict = { proposalId: string; key: string; category: string; subject: string; proposed: string; checkpoint: string | null; text: string };
+type Draft = { job: Job; source: { id: string; fileName: string; sha256: string }; resume: Resume | null; issues: Issue[]; groups: { category: string; count: number }[]; sections: number; conflicts: StateConflict[]; validationErrors: string[] };
 type EvidencePage = { total: number; items: { id: string; ordinal: number; speaker: string; text: string; section: string; artifact: boolean; timestamp?: string }[] };
 const categories = ["fact", "character", "relationship", "knowledge", "world", "event", "inventory", "skill", "condition", "thread", "entity", "connection"];
 
@@ -72,39 +73,51 @@ export default function ImportReview({ id, expectedCheckpointId, onApproved, onR
       </details>}
     </div>
     {draft.job.status !== "prepared" && <>
+    {editable && <div className="panel"><h2>Checkpoint consistency · {draft.conflicts.length} conflicts</h2>
+      <p>Review notes do not change story data. Correct a skill or inventory proposal and save it with “Also update resume checkpoint” to apply the value to both records.</p>
+      {!draft.conflicts.length && <p>Current skill and inventory proposals agree with the resume checkpoint.</p>}
+      {draft.conflicts.map(conflict => <div className="import-item" key={conflict.proposalId}><strong>{conflict.subject}</strong><p>{conflict.text}</p>
+        <button onClick={() => { setCategory(conflict.category); setQuery(conflict.key); setPage(0); setHistory(false); document.getElementById(`proposal-list-${id}`)?.scrollIntoView({ behavior: "smooth" }); }}>Edit conflicting proposal</button></div>)}
+      {draft.validationErrors.map(message => <p role="alert" className="text-error" key={message}>{message}</p>)}
+    </div>}
     <div className="panel"><h2>Review exceptions · {unresolved} unresolved</h2>
-      <p>Resolve conflicts and acknowledge information the source cannot establish. Clear proposals are included unless you exclude them.</p>
+      <p>Save notes for information the source cannot establish. Correct structured data in the proposal or resume editors. Approval also checks checkpoint consistency and world references.</p>
       {!draft.issues.length && <p>{editable ? "No review exceptions were reported." : "Exceptions appear after analysis and review."}</p>}
-      {draft.issues.map(issue => <IssueCard key={issue.id} issue={issue} disabled={!editable || busy} evidence={() => setEvidence(JSON.parse(issue.evidenceJson))} save={resolution => perform(async () => { await api(`/imports/${id}/issues/${issue.id}`, { method: "PUT", body: JSON.stringify({ revision: draft.job.proposalRevision, resolution }) }); })} />)}
+      {draft.issues.map(issue => <IssueCard key={issue.id} issue={issue} conflict={draft.conflicts.find(x => issue.code === `state:${x.key}`)} disabled={!editable || busy} evidence={() => setEvidence(JSON.parse(issue.evidenceJson))} save={resolution => perform(async () => { await api(`/imports/${id}/issues/${issue.id}`, { method: "PUT", body: JSON.stringify({ revision: draft.job.proposalRevision, resolution }) }); })} />)}
     </div>
-    <div className="panel"><h2>Campaign proposal</h2>
+    <div className="panel" id={`proposal-list-${id}`}><h2>Campaign proposal</h2>
       <div className="import-filters"><label>Search<input value={query} onChange={e => { setQuery(e.target.value); setPage(0); }} placeholder="Names, claims, events…" /></label>
       <label>Category<select value={category} onChange={e => { setCategory(e.target.value); setPage(0); }}><option value="">All categories</option>{categories.map(c => <option key={c} value={c}>{c} ({draft.groups.find(g => g.category === c)?.count || 0})</option>)}</select></label>
       <label className="check-label"><input type="checkbox" checked={history} onChange={e => { setHistory(e.target.checked); setPage(0); }} />Show superseded versions</label></div>
       <p>{rows.total} proposals · page {page + 1}</p>
-      {rows.items.map(row => <ProposalCard key={row.proposal.id} row={row} grouped={grouped} disabled={!editable || busy || !row.proposal.current} evidence={() => setEvidence(row.claim.evidenceOrdinals)} save={(claim, excluded) => perform(async () => { await api(`/imports/${id}/proposals/${row.proposal.id}`, { method: "PUT", body: JSON.stringify({ revision: draft.job.proposalRevision, claim, excluded }) }); })} />)}
+      {rows.items.map(row => <ProposalCard key={row.proposal.id} row={row} grouped={grouped} conflict={draft.conflicts.find(x => x.proposalId === row.proposal.id)} disabled={!editable || busy || !row.proposal.current} evidence={() => setEvidence(row.claim.evidenceOrdinals)} save={(claim, excluded, syncResume) => perform(async () => { await api(`/imports/${id}/proposals/${row.proposal.id}`, { method: "PUT", body: JSON.stringify({ revision: draft.job.proposalRevision, claim, excluded, syncResume }) }); })} />)}
       {!rows.items.length && <p>No proposals in this view.</p>}
       <button disabled={page === 0} onClick={() => setPage(page - 1)}>Previous</button>{" "}<button disabled={(page + 1) * 20 >= rows.total} onClick={() => setPage(page + 1)}>Next</button>
     </div>
     <ResumeCard key={`${draft.job.id}-${draft.job.resumeJson}`} resume={draft.resume} grouped={grouped} disabled={!editable || busy} evidence={() => setEvidence(draft.resume?.evidenceOrdinals || [])} save={resume => perform(async () => { await api(`/imports/${id}/resume`, { method: "PUT", body: JSON.stringify({ revision: draft.job.proposalRevision, resume }) }); })} />
     {editable && <div className="panel"><p>Approval commits the included proposals, preserved source, resume checkpoint, registered characters, graph, memories, and Live world occurrences together.</p>
       {grouped && !draft.resume?.playerCharacterName?.trim() && <p className="text-error">Set and save the actual player character’s name in the resume checkpoint before approval.</p>}
-      <button className="primary" disabled={busy || unresolved > 0 || !draft.resume?.state || (grouped && !draft.resume.playerCharacterName?.trim())} onClick={() => void perform(async () => { await post(`/imports/${id}/approval`, { expectedCheckpointId, revision: draft.job.proposalRevision }); await onApproved(); })}>Approve reconstruction</button></div>}
+      {(draft.conflicts.length > 0 || draft.validationErrors.length > 0) && <p className="text-error">Correct the checkpoint conflicts and world reference errors shown above before approval.</p>}
+      <button className="primary" disabled={busy || unresolved > 0 || draft.conflicts.length > 0 || draft.validationErrors.length > 0 || !draft.resume?.state || (grouped && !draft.resume.playerCharacterName?.trim())} onClick={() => void perform(async () => { await post(`/imports/${id}/approval`, { expectedCheckpointId, revision: draft.job.proposalRevision }); await onApproved(); })}>Approve reconstruction</button></div>}
     </>}
     {evidence !== undefined && <EvidenceDrawer id={id} ordinals={evidence} grouped={grouped} close={() => setEvidence(undefined)} />}
     {browse && <TranscriptDrawer sourceId={draft.source.id} jobId={id} close={() => setBrowse(false)} />}
   </div>;
 }
-function IssueCard({ issue, disabled, evidence, save }: { issue: Issue; disabled: boolean; evidence: () => void; save: (resolution: string) => Promise<void> }) {
+function IssueCard({ issue, conflict, disabled, evidence, save }: { issue: Issue; conflict?: StateConflict; disabled: boolean; evidence: () => void; save: (resolution: string) => Promise<void> }) {
   const [resolution, setResolution] = useState(issue.resolution);
-  return <div className="import-item"><strong>{issue.blocking ? issue.resolution ? "Addressed" : "Requires review" : "Note"} · {issue.code}</strong><p>{issue.text}</p><button onClick={evidence}>Evidence</button>
-    <label>Resolution or acknowledgment<textarea value={resolution} disabled={disabled} onChange={e => setResolution(e.target.value)} maxLength={2000} /></label><button disabled={disabled || !resolution.trim()} onClick={() => void save(resolution)}>Save resolution</button>{issue.resolution && <small>Saved: {issue.resolution}</small>}</div>;
+  useEffect(() => setResolution(issue.resolution), [issue.resolution]);
+  return <div className="import-item"><strong>{conflict ? "Data conflict remains" : issue.blocking ? issue.resolution ? "Acknowledged" : "Requires review" : "Note"} · {issue.code}</strong><p>{issue.text}</p>{conflict && <p className="text-error">{conflict.text}</p>}<button onClick={evidence}>Evidence</button>
+    <label>Review note / acknowledgment<textarea value={resolution} disabled={disabled} onChange={e => setResolution(e.target.value)} maxLength={2000} /><small>A note does not change skill ranks, quantities, claims or the resume checkpoint.</small></label><button disabled={disabled || !resolution.trim()} onClick={() => void save(resolution)}>Save review note</button>{issue.resolution && <small>Saved: {issue.resolution}</small>}</div>;
 }
-function ProposalCard({ row, grouped, disabled, evidence, save }: { row: Proposal; grouped: boolean; disabled: boolean; evidence: () => void; save: (claim: Claim, excluded: boolean) => Promise<void> }) {
+function ProposalCard({ row, grouped, conflict, disabled, evidence, save }: { row: Proposal; grouped: boolean; conflict?: StateConflict; disabled: boolean; evidence: () => void; save: (claim: Claim, excluded: boolean, syncResume: boolean) => Promise<void> }) {
   const [claim, setClaim] = useState(row.claim); const [excluded, setExcluded] = useState(row.proposal.excluded);
+  const [syncResume, setSyncResume] = useState(true);
+  const canSync = !excluded && claim.disposition === "current" && ["skill", "inventory"].includes(claim.category);
   const change = (field: keyof Claim, value: unknown) => setClaim({ ...claim, [field]: value });
   return <article className="import-item"><span className="badge">{claim.category} · {claim.disposition}{!row.proposal.current ? " · superseded" : ""}{row.proposal.excluded ? " · excluded" : ""}</span><p>{claim.text}</p><small>Model confidence estimate {Math.round(claim.confidence * 100)}% · {claim.evidenceOrdinals.length} supporting {grouped ? "blocks" : "passages"}</small><button onClick={evidence}>Evidence</button>
-    <details><summary>Edit proposal</summary><label>Statement<textarea disabled={disabled} value={claim.text} onChange={e => change("text", e.target.value)} maxLength={1000} /></label>
+    {conflict && <p className="text-error">{conflict.text}</p>}
+    <details open={conflict ? true : undefined}><summary>Edit proposal</summary><label>Statement<textarea disabled={disabled} value={claim.text} onChange={e => change("text", e.target.value)} maxLength={1000} /><small>When correcting a value, update the statement to describe the same value.</small></label>
       <div className="import-filters"><label>Subject<input disabled={disabled} value={claim.subject} onChange={e => change("subject", e.target.value)} /></label><label>Target<input disabled={disabled} value={claim.target} onChange={e => change("target", e.target.value)} /></label><label>Value<input disabled={disabled} value={claim.value} onChange={e => change("value", e.target.value)} /></label><label>Amount / score<input disabled={disabled} type="number" value={claim.amount} onChange={e => change("amount", Number(e.target.value))} /></label></div>
       <label>Claim type<select disabled={disabled} value={claim.kind} onChange={e => change("kind", e.target.value)}>{["fact", "rumor", "belief", "secret", "correction"].map(k => <option key={k}>{k}</option>)}</select></label>
       <label>Visibility<select disabled={disabled} value={claim.visibility} onChange={e => change("visibility", e.target.value)}><option value="public">Public</option><option value="narrator">Narrator only</option></select></label>
@@ -113,7 +126,8 @@ function ProposalCard({ row, grouped, disabled, evidence, save }: { row: Proposa
       {grouped && <div className="import-filters"><label>Entity kind<select disabled={disabled} value={claim.entityKind || ""} onChange={e => change("entityKind", e.target.value || null)}><option value="">Unspecified</option>{["character", "object", "being", "place"].map(kind => <option key={kind} value={kind}>{kind}</option>)}</select></label><label>Location<input disabled={disabled} value={claim.location || ""} onChange={e => change("location", e.target.value || null)} /></label><label>Actor<input disabled={disabled} value={claim.actor || ""} onChange={e => change("actor", e.target.value || null)} /></label></div>}
       {grouped && <label>Related entity keys<input disabled={disabled} value={(claim.relatedEntityKeys || []).join(", ")} onChange={e => change("relatedEntityKeys", e.target.value.split(",").map(x => x.trim()).filter(Boolean))} /><small>Reference registered characters, objects, beings or places. Event and thread keys are not entities.</small></label>}
       <label className="check-label"><input disabled={disabled} type="checkbox" checked={excluded} onChange={e => setExcluded(e.target.checked)} />Exclude from approval</label>
-      <button disabled={disabled} onClick={() => void save(claim, excluded)}>Save proposal</button></details></article>;
+      {canSync && <label className="check-label"><input disabled={disabled} type="checkbox" checked={syncResume} onChange={e => setSyncResume(e.target.checked)} />Also update resume checkpoint<small>Save the proposal and its {claim.category === "skill" ? "rank" : "quantity"} together. Original source and previous proposal versions stay available.</small></label>}
+      <button disabled={disabled} onClick={() => void save(claim, excluded, canSync && syncResume)}>{canSync && syncResume ? "Save proposal and checkpoint" : "Save proposal"}</button></details></article>;
 }
 function ResumeCard({ resume, grouped, disabled, evidence, save }: { resume: Resume | null; grouped: boolean; disabled: boolean; evidence: () => void; save: (resume: Resume) => Promise<void> }) {
   const [state, setState] = useState<State>(resume?.state || { location: "", time: "Unknown", objective: "", condition: "Unknown", skills: {}, inventory: {}, participants: [] });
