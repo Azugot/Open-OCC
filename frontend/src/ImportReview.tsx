@@ -97,7 +97,7 @@ export default function ImportReview({ id, expectedCheckpointId, onApproved, onR
 }
 function IssueCard({ issue, disabled, evidence, save }: { issue: Issue; disabled: boolean; evidence: () => void; save: (resolution: string) => Promise<void> }) {
   const [resolution, setResolution] = useState(issue.resolution);
-  return <div className="import-item"><strong>{issue.blocking ? "Requires review" : "Note"} · {issue.code}</strong><p>{issue.text}</p><button onClick={evidence}>Evidence</button>
+  return <div className="import-item"><strong>{issue.blocking ? issue.resolution ? "Addressed" : "Requires review" : "Note"} · {issue.code}</strong><p>{issue.text}</p><button onClick={evidence}>Evidence</button>
     <label>Resolution or acknowledgment<textarea value={resolution} disabled={disabled} onChange={e => setResolution(e.target.value)} maxLength={2000} /></label><button disabled={disabled || !resolution.trim()} onClick={() => void save(resolution)}>Save resolution</button>{issue.resolution && <small>Saved: {issue.resolution}</small>}</div>;
 }
 function ProposalCard({ row, grouped, disabled, evidence, save }: { row: Proposal; grouped: boolean; disabled: boolean; evidence: () => void; save: (claim: Claim, excluded: boolean) => Promise<void> }) {
