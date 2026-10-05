@@ -41,6 +41,7 @@ public static class Reconstruction
         connection: subject=source name, target=target name, value=relationship type.
         event: actor=established actor or null, location=established place or null, relatedEntityKeys=existing entity keys. Entity location is established place or null.
         Resume is the complete ending state or null if unrecoverable; list gaps explicitly. playerCharacterName is the actual player character; participants contains only people physically present at the ending. Recover latestAction and replyPending from evidence.
+        State maps: skills={"Magic Talent":"F · 2/5"}, inventory={"Rations":2}. Skill values are plain strings, never rank/level objects, numbers, arrays or null.
         Return one schema-valid JSON object, at most 16 claims. Use only schema enums, all required fields, numeric amount/confidence, and empty strings/arrays or amount=0 for irrelevant fields. Example (replace with supported evidence):
         {"claims":[{"key":"entity:harbor","category":"entity","text":"Harbor is the departure point.","subject":"Harbor","entityKind":"place","target":"","value":"","amount":0,"kind":"fact","visibility":"public","knownBy":[],"confidence":0.9,"evidenceOrdinals":[0],"disposition":"current","supersedesKeys":[]}],"issues":[],"resume":null,"summary":"Mara prepares to sail from Harbor.","resolvedIssueCodes":[]}
         """;
@@ -253,7 +254,7 @@ public static class Reconstruction
             job.OutputTokens = (job.OutputTokens ?? 0) + (completion.OutputTokens ?? 0);
             try
             {
-                result = Json.Read<AgentResult>(UnwrapJson(completion.Text));
+                result = ReadModelResult(completion.Text);
                 ValidateResult(result, allowed, current.Select(x => x.Key).ToHashSet(), evidence);
                 if (mode == "resume" && result.Resume is null) throw new InvalidOperationException("The final scene was omitted.");
                 if (mode == "audit" && (result.Claims.Length > 0 || result.Resume is not null)) throw new InvalidOperationException("Review must report issues without rewriting proposals.");
@@ -478,6 +479,39 @@ public static class Reconstruction
     private sealed record RejectedClaim(int Index, ImportClaim Claim);
     private sealed class OutputValidationException(string message, RejectedClaim[] rejected) : InvalidOperationException(message)
     { public RejectedClaim[] Rejected { get; } = rejected; }
+    private sealed record RejectedField(string Path, string Expected, string Received, JsonElement? Value);
+    private sealed class StateFieldValidationException(string message, RejectedField[] rejected) : InvalidOperationException(message)
+    { public RejectedField[] Rejected { get; } = rejected; }
+    private static AgentResult ReadModelResult(string text)
+    {
+        using var document = JsonDocument.Parse(UnwrapJson(text));
+        var root = document.RootElement;
+        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("resume", out var resume) && resume.ValueKind == JsonValueKind.Object &&
+            resume.TryGetProperty("state", out var state) && state.ValueKind == JsonValueKind.Object)
+        {
+            var rejected = new List<RejectedField>();
+            foreach (var name in new[] { "skills", "inventory" })
+            {
+                var path = "$.resume.state." + name;
+                var expected = name == "skills" ? "a plain string of at most 100 characters (e.g. \"F · 2/5\"), not a rank/level object" : "an integer count from 0 through 1000000";
+                if (!state.TryGetProperty(name, out var map) || map.ValueKind != JsonValueKind.Object)
+                {
+                    rejected.Add(new(path, "an object mapping names to " + expected, map.ValueKind == JsonValueKind.Undefined ? "missing" : map.ValueKind.ToString().ToLowerInvariant(), map.ValueKind == JsonValueKind.Undefined ? null : map.Clone()));
+                    continue;
+                }
+                foreach (var entry in map.EnumerateObject())
+                {
+                    var valid = name == "skills" ? entry.Value.ValueKind == JsonValueKind.String && entry.Value.GetString()!.Length <= 100
+                        : entry.Value.ValueKind == JsonValueKind.Number && entry.Value.TryGetInt32(out var count) && count is >= 0 and <= 1000000;
+                    if (valid) continue;
+                    var key = entry.Name.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\n", "\\n").Replace("\r", "\\r");
+                    rejected.Add(new(path + "['" + key + "']", expected, entry.Value.ValueKind is JsonValueKind.True or JsonValueKind.False ? "boolean" : entry.Value.ValueKind.ToString().ToLowerInvariant(), entry.Value.Clone()));
+                }
+            }
+            if (rejected.Count > 0) throw new StateFieldValidationException(string.Join("\n", rejected.Select(x => x.Path + ": expected " + x.Expected + "; received " + x.Received + ". Preserve only evidence-supported values.")), rejected.ToArray());
+        }
+        return root.Deserialize<AgentResult>(Json.Options)!;
+    }
     private static ProviderPrompt RepairPrompt(ProviderPrompt prompt, string response, string error, Exception failure, int inputLimit)
     {
         var capacity = inputLimit - prompt.Instructions.Length - Schema.GetRawText().Length;
@@ -509,6 +543,12 @@ public static class Reconstruction
             var claims = Json.Write(validation.Rejected.Select(x => new { index = x.Index, claim = x.Claim }));
             request = Fit(prompt.Input, "REJECTED CLAIMS (other response fields omitted for budget; reconstruct the complete stage from evidence):", claims)
                 ?? Fit(compactInput, "REJECTED CLAIMS (other response fields omitted for budget; reconstruct the complete stage from evidence):", claims);
+        }
+        else if (failure is StateFieldValidationException fields)
+        {
+            var values = Json.Write(fields.Rejected);
+            request = Fit(prompt.Input, "REJECTED FIELDS (other response fields omitted for budget; reconstruct the complete stage from evidence):", values)
+                ?? Fit(compactInput, "REJECTED FIELDS (other response fields omitted for budget; reconstruct the complete stage from evidence):", values);
         }
         else
             request = Fit(prompt.Input, "REJECTED RESPONSE EXCERPT (not a complete JSON result):", ResponseExcerpt(response))
@@ -593,6 +633,11 @@ public static class Reconstruction
         var issue = JsonNode.Parse("""{"type":"object","additionalProperties":false,"properties":{"code":{"type":"string"},"text":{"type":"string"},"blocking":{"type":"boolean"},"evidenceOrdinals":{"type":"array","items":{"type":"integer"}}},"required":["code","text","blocking","evidenceOrdinals"]}""")!;
         var resume = JsonNode.Parse("""{"type":"object","additionalProperties":false,"properties":{"state":{},"evidenceOrdinals":{"type":"array","items":{"type":"integer"}},"latestAction":{"type":"string"},"replyPending":{"type":"boolean"},"missing":{"type":"array","items":{"type":"string"}}},"required":["state","evidenceOrdinals","latestAction","replyPending","missing"]}""")!;
         resume["properties"]!["state"] = old["properties"]!["resumeState"]!.DeepClone();
+        var stateProperties = resume["properties"]!["state"]!["anyOf"]![1]!["properties"]!;
+        stateProperties["skills"]!["description"] = "Map names to plain strings, e.g. {\"Magic Talent\":\"F · 2/5\"}. Never objects, numbers, arrays or null.";
+        stateProperties["skills"]!["additionalProperties"]!["maxLength"] = 100;
+        stateProperties["inventory"]!["additionalProperties"]!["minimum"] = 0;
+        stateProperties["inventory"]!["additionalProperties"]!["maximum"] = 1000000;
         resume["properties"]!["playerCharacterName"] = JsonNode.Parse("""{"anyOf":[{"type":"null"},{"type":"string","maxLength":100}],"description":"The actual player's character name, not a guessed NPC. Required for a playable document-v3 import; unknown identity must be reviewed."}""");
         var root = new JsonObject { ["type"] = "object", ["additionalProperties"] = false, ["properties"] = new JsonObject {
             ["claims"] = new JsonObject { ["type"] = "array", ["maxItems"] = 16, ["items"] = claim }, ["issues"] = new JsonObject { ["type"] = "array", ["maxItems"] = 16, ["items"] = issue },

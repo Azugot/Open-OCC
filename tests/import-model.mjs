@@ -23,7 +23,7 @@ createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url?.endsWith('/models')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ data: [{ id: 'scripted' }, { id: 'scripted-invalid' }, { id: 'scripted-entity-repair' }] })); return;
+      res.end(JSON.stringify({ data: [{ id: 'scripted' }, { id: 'scripted-invalid' }, { id: 'scripted-entity-repair' }, { id: 'scripted-skill-repair' }] })); return;
     }
     let data = ''; for await (const chunk of req) { data += chunk; if (data.length > 1_000_000) throw Error('Request too large'); }
     const body = JSON.parse(data || '{}');
@@ -37,6 +37,15 @@ createServer(async (req, res) => {
           throw Error('Entity repair did not receive exact errors and rejected data.');
         output.claims.push({ ...output.claims[0], key: 'entity:harbor', category: 'entity', text: 'Harbor is the departure point.', subject: repairing ? 'Harbor' : '', entityKind: repairing ? 'place' : null });
       }
+      if (body.model === 'scripted-skill-repair' && input.startsWith('STAGE: extract')) {
+        const repairing = input.includes('VALIDATION REPAIR:');
+        if (repairing && (!input.includes("$.resume.state.skills['Magic Talent']") || !input.includes('plain string') || !input.includes('received object') || !input.includes('REJECTED RESPONSE:') || !input.includes('"rank":"F"')))
+          throw Error('Skill repair did not receive the expected type and exact rejected value.');
+        output.resume.state = { ...state, skills: { ...state.skills, 'Magic Talent': repairing ? 'F · 2/5' : { rank: 'F', progress: '2/5' } } };
+        output.claims.push({ ...output.claims[3], key: 'skill:magic-talent', text: 'Magic Talent is F · 2/5.', subject: 'Magic Talent' });
+      }
+      else if (body.model === 'scripted-skill-repair' && output.resume)
+        output.resume.state = { ...state, skills: { ...state.skills, 'Magic Talent': 'F · 2/5' } };
     }
     const content = body.model === 'scripted-invalid' ? '{truncated' : JSON.stringify(output);
     res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 10, completion_tokens: 20 } }));

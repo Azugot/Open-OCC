@@ -31,3 +31,9 @@ The scripted model proves request/response and persistence behavior. It does not
 - `tests/entity-repair-smoke.mjs` passed against isolated PostgreSQL and the recorded HTTP model. The first extract response deliberately omitted the entity name and kind; the repair request included both field errors and the rejected entity. The corrected draft reached review with complete coverage and preserved original bytes.
 - The existing long-transcript `tests/import-smoke.mjs` also passed, including saved edits, stale-revision rejection, approval, portable restore, original source download, and pause/retry.
 - No live model calls were made. Lower real-model failure frequency remains to be observed on subsequent imports; strict evidence and state validation remain in force.
+
+## Follow-up: state dictionary type repairs
+
+- Full .NET suite: **198 passed**. Regressions cover bounded exact-field feedback, object/numeric/null/array/boolean skill values, and invalid inventory types and ranges. The initial skill regression cases failed before the fix.
+- `tests/skill-repair-smoke.mjs` passed against isolated PostgreSQL and the recorded HTTP model. The first extract response returned a rank/progress object for Magic Talent; the repair received the exact field, expected string shape, received object type, and rejected value. The complete draft reached review with the evidence-supported string, approval readiness, and unchanged source bytes.
+- The entity repair HTTP regression and long-transcript import smoke also passed, including saved edits, stale-revision rejection, approval, portable restore, source preservation, and pause/retry. No live model calls were made; validation remains strict and unsupported values are never coerced or partially committed.
