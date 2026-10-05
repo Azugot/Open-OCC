@@ -8,26 +8,25 @@ public static class ImportReview
 {
     public static void Map(WebApplication app)
     {
+        app.MapPost("/api/imports/{id:guid}/prepare", async (Guid id, StoryDb db, CancellationToken ct) =>
+        {
+            var job = await Job(db, id, ct);
+            if (job.Stage != "normalize" || job.Status is not ("paused" or "failed" or "cancelled")) throw new InvalidOperationException("Only stopped source preparation can be retried.");
+            job.Status = "preparing"; job.Error = null; job.ProposalRevision++;
+            await db.SaveChangesAsync(ct); await ImportPreparation.Prepare(db, job, ct); return Results.Ok(job);
+        });
         app.MapGet("/api/imports/{id:guid}/draft", async (Guid id, StoryDb db, CancellationToken ct) =>
         {
             var job = await Job(db, id, ct);
             var current = await db.ImportProposals.Where(x => x.JobId == id && x.Current && !x.Excluded).ToListAsync(ct);
             var resume = job.ResumeJson is null ? null : Json.Read<ResumeProposal>(job.ResumeJson);
             var conflicts = StateConflicts(current, resume);
-            var validationErrors = new List<string>();
-            if (job.Status == "review" && job.ReviewCompleted && resume?.State is not null)
-            {
-                try
-                {
-                    var head = await db.Checkpoints.SingleAsync(x => x.Id == job.ExpectedCheckpointId, ct);
-                    var blocks = await db.Segments.Where(x => x.JobId == id).ToDictionaryAsync(x => x.Ordinal, ct);
-                    ImportedWorldCompiler.Compile(StoryWorld.From(head), Json.Read<StoryState>(head.StateJson), job, resume,
-                        current.Select(x => Json.Read<ImportClaim>(x.ContentJson)).ToArray(), blocks);
-                }
-                catch (InvalidOperationException e) { validationErrors.Add(e.Message); }
-            }
+            var approval = await ImportApproval.Evaluate(db, job, ct);
+            var validationErrors = approval.Blockers.Where(x => x.Code == "world:references" || x.Code.StartsWith("reference:")).Select(x => x.Message).ToArray();
+            var branch = await db.Branches.Where(x => x.Id == job.BranchId).Select(x => new { x.Id, x.Name, x.CampaignId }).SingleAsync(ct);
+            var campaignName = await db.Campaigns.Where(x => x.Id == branch.CampaignId).Select(x => x.Name).SingleAsync(ct);
             var source = await db.Sources.Where(x => x.Id == job.SourceId).Select(x => new { x.Id, x.FileName, x.Sha256, size = x.Bytes.Length }).SingleAsync(ct);
-            return Results.Ok(new { job, source, resume, conflicts, validationErrors,
+            return Results.Ok(new { job, source, resume, conflicts, validationErrors, approval, branch, campaignName,
                 issues = await db.ImportIssues.Where(x => x.JobId == id).OrderByDescending(x => x.Blocking).ThenBy(x => x.Code).ToListAsync(ct),
                 groups = await db.ImportProposals.Where(x => x.JobId == id && x.Current).GroupBy(x => x.Category).Select(x => new { category = x.Key, count = x.Count() }).ToListAsync(ct),
                 sections = await db.ImportSections.CountAsync(x => x.JobId == id, ct) });
@@ -42,18 +41,8 @@ public static class ImportReview
             var items = await rows.OrderBy(x => x.Key).ThenByDescending(x => x.Revision).Skip(index * 20).Take(20).ToListAsync(ct);
             return Results.Ok(new { total, page = index, items = items.Select(x => new { proposal = x, claim = Json.Read<ImportClaim>(x.ContentJson) }) });
         });
-        app.MapGet("/api/imports/{id:guid}/evidence", async (Guid id, string? ordinals, int? page, StoryDb db, CancellationToken ct) =>
-        {
-            await Job(db, id, ct);
-            var rows = db.Segments.Where(x => x.JobId == id);
-            if (!string.IsNullOrWhiteSpace(ordinals))
-            {
-                var parts = ordinals.Split(',');
-                if (parts.Length > 64 || parts.Any(x => !int.TryParse(x, out _))) throw new InvalidOperationException("Provide up to 64 passage ordinals.");
-                var ids = parts.Select(int.Parse).ToArray(); rows = rows.Where(x => ids.Contains(x.Ordinal));
-            }
-            return Results.Ok(new { total = await rows.CountAsync(ct), items = await ImportDocument.Load(db, await Job(db, id, ct), rows.OrderBy(x => x.Ordinal).Skip(Math.Max(0, page ?? 0) * 20).Take(20), ct) });
-        });
+        app.MapGet("/api/imports/{id:guid}/evidence", async (Guid id, string? ordinals, Guid? proposalId, int? page, StoryDb db, CancellationToken ct) =>
+            Results.Ok(await EvidencePage(db, id, ordinals, proposalId, page, ct)));
         app.MapPut("/api/imports/{id:guid}/proposals/{proposalId:guid}", async (Guid id, Guid proposalId, EditProposal request, StoryDb db, CancellationToken ct) =>
         {
             return Results.Ok(new { revision = await SaveProposal(db, id, proposalId, request, ct) });
@@ -74,32 +63,62 @@ public static class ImportReview
             await db.SaveChangesAsync(ct); return Results.Ok(new { revision = job.ProposalRevision });
         });
         app.MapPost("/api/imports/{id:guid}/approval", async (Guid id, ApproveReconstruction request, StoryDb db, CancellationToken ct) => { await Approve(db, id, request, ct); return Results.NoContent(); });
-        app.MapPost("/api/imports/{id:guid}/reanalyze", async (Guid id, ImportOptions request, StoryDb db, ProviderRouting routing, CancellationToken ct) =>
-        {
-            Reconstruction.ValidateOptions(request);
-            var old = await db.ImportJobs.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException();
-            var branch = await db.Branches.SingleAsync(x => x.Id == old.BranchId, ct);
-            var routed = await routing.Resolve(db, "reconstruction", ct);
-            var job = new ImportJob { SourceId = old.SourceId, BranchId = old.BranchId, ExpectedCheckpointId = branch.HeadCheckpointId,
-                Method = Reconstruction.Method, Provider = routed.Profile.Id, Model = routed.Profile.Model,
-                InputCharacterLimit = request.InputCharacterLimit, OutputTokenLimit = request.OutputTokenLimit, MaxCalls = request.MaxCalls };
-            db.ImportJobs.Add(job); await db.SaveChangesAsync(ct); return Results.Ok(job);
-        });
+        app.MapPost("/api/imports/{id:guid}/reanalyze", async (Guid id, ReanalyzeImport request, StoryDb db, ProviderRouting routing, CancellationToken ct) =>
+            Results.Ok(await Reanalyze(db, routing, id, request, ct)));
         app.MapPost("/api/imports/{id:guid}/resume-processing", async (Guid id, RetryImport request, StoryDb db, ProviderRouting routing, CancellationToken ct) =>
         {
             var job = await Job(db, id, ct);
             if (job.Status is not ("paused" or "cancelled" or "failed" or "prepared")) throw new InvalidOperationException("Only stopped or prepared imports can start or resume.");
-            if (request.Provider is not null)
-            {
-                var routed = await routing.ResolveCaptured(db, request.Provider, request.Model ?? "", ct);
-                job.Provider = routed.Profile.Id; job.Model = routed.Profile.Model;
-            }
+            var selection = request.Provider is null ? (Provider: job.Provider, Model: request.Model ?? job.Model) : await routing.Capture(db, request.Provider, request.Model, ct);
+            var routed = await routing.ResolveCaptured(db, selection.Provider, selection.Model, ct);
+            if (routed.Profile.Adapter == "fixture") throw new InvalidOperationException("Choose a configured reconstruction model. Fixture profiles only preserve source text.");
+            job.Provider = selection.Provider; job.Model = selection.Model;
             if (request.MaxCalls is { } max) { Reconstruction.ValidateOptions(new(job.InputCharacterLimit, job.OutputTokenLimit, max)); if (max <= job.Calls) throw new InvalidOperationException("Call budget must exceed the calls already used."); job.MaxCalls = max; }
             var limits = new ImportOptions(request.InputCharacterLimit ?? job.InputCharacterLimit, request.OutputTokenLimit ?? job.OutputTokenLimit, job.MaxCalls);
             Reconstruction.ValidateOptions(limits); job.InputCharacterLimit = limits.InputCharacterLimit; job.OutputTokenLimit = limits.OutputTokenLimit;
             job.Status = "queued"; job.Error = null; job.LeaseOwner = null; job.LeaseUntil = null; job.ProposalRevision++;
             await db.SaveChangesAsync(ct); return Results.Ok(job);
         });
+    }
+    public record EvidenceResult(int Total, IReadOnlyList<ImportSegment> Items);
+    public static async Task<EvidenceResult> EvidencePage(StoryDb db, Guid id, string? ordinals, Guid? proposalId, int? page, CancellationToken ct)
+    {
+            await Job(db, id, ct);
+            var rows = db.Segments.Where(x => x.JobId == id);
+            if (proposalId is { } selected)
+            {
+                if (!string.IsNullOrWhiteSpace(ordinals)) throw new InvalidOperationException("Choose one evidence selector.");
+                var proposal = await db.ImportProposals.SingleOrDefaultAsync(x => x.Id == selected && x.JobId == id, ct) ?? throw new KeyNotFoundException();
+                var cited = Json.Read<ImportClaim>(proposal.ContentJson).EvidenceOrdinals.Distinct().ToArray();
+                rows = rows.Where(x => cited.Contains(x.Ordinal));
+            }
+            if (!string.IsNullOrWhiteSpace(ordinals))
+            {
+                var parts = ordinals.Split(',');
+                if (parts.Length > 64 || parts.Any(x => !int.TryParse(x, out _))) throw new InvalidOperationException("Provide up to 64 passage ordinals.");
+                var ids = parts.Select(int.Parse).ToArray(); rows = rows.Where(x => ids.Contains(x.Ordinal));
+            }
+            return new(await rows.CountAsync(ct), await ImportDocument.Load(db, await Job(db, id, ct), rows.OrderBy(x => x.Ordinal).Skip(Math.Max(0, page ?? 0) * 20).Take(20), ct));
+    }
+    public static async Task<ImportJob> Reanalyze(StoryDb db, ProviderRouting routing, Guid id, ReanalyzeImport request, CancellationToken ct)
+    {
+        var options = new ImportOptions(request.InputCharacterLimit, request.OutputTokenLimit, request.MaxCalls);
+        Reconstruction.ValidateOptions(options);
+        var old = await db.ImportJobs.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException();
+        var branch = await db.Branches.SingleAsync(x => x.Id == old.BranchId, ct);
+        var selection = await routing.Capture(db, request.Provider, request.Model, ct);
+        if (!request.PrepareOnly) await routing.ResolveCaptured(db, selection.Provider, selection.Model, ct);
+        ImportJob job;
+        await using (var transaction = await db.Database.BeginTransactionAsync(ct))
+        {
+            if (request.ForkOriginal) branch = await CampaignService.Fork(db, branch.Id, new(old.ExpectedCheckpointId, request.TimelineName), ct);
+            job = new ImportJob { SourceId = old.SourceId, BranchId = branch.Id, ExpectedCheckpointId = branch.HeadCheckpointId,
+                Method = Reconstruction.Method, Provider = selection.Provider, Model = selection.Model, Status = request.PrepareOnly ? "preparing" : "queued",
+                InputCharacterLimit = options.InputCharacterLimit, OutputTokenLimit = options.OutputTokenLimit, MaxCalls = options.MaxCalls };
+            db.ImportJobs.Add(job); await db.SaveChangesAsync(ct); await transaction.CommitAsync(ct);
+        }
+        if (request.PrepareOnly) await ImportPreparation.Prepare(db, job, ct);
+        return job;
     }
     public static async Task<ImportJob> Job(StoryDb db, Guid id, CancellationToken ct)
     {
@@ -173,17 +192,15 @@ public static class ImportReview
     {
         await using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
         var job = await Editable(db, id, request.Revision, ct);
-        if (job.Processed != job.Total) throw new InvalidOperationException("Source coverage is incomplete.");
-        if (await db.ImportIssues.AnyAsync(x => x.JobId == id && x.Blocking && x.Resolution == "", ct)) throw new InvalidOperationException("Resolve or acknowledge all blocking review issues first.");
-        var resume = job.ResumeJson is null ? null : Json.Read<ResumeProposal>(job.ResumeJson);
-        if (resume?.State is null || !Reconstruction.Usable(resume.State)) throw new InvalidOperationException("Provide a usable final scene and objective. An empty starting state cannot be approved.");
-        if (job.Method == Reconstruction.Method && string.IsNullOrWhiteSpace(resume.PlayerCharacterName))
-            throw new InvalidOperationException("Identify the player-controlled character before approving this import. Do not guess from the participant list.");
-        resume.State.Validate();
+        var approval = await ImportApproval.Evaluate(db, job, ct);
+        if (!approval.CanApprove)
+        {
+            if (approval.Blockers.Any(x => x.Code == "timeline")) throw new DbUpdateConcurrencyException(approval.Blockers.First(x => x.Code == "timeline").Message);
+            throw new InvalidOperationException(string.Join("\n", approval.Blockers.Select(x => x.Message)));
+        }
+        var resume = Json.Read<ResumeProposal>(job.ResumeJson!);
         var branch = await db.Branches.SingleAsync(x => x.Id == job.BranchId, ct);
-        if (StoryEngine.IsExecuting(branch.Id) || await db.GenerationRuns.AnyAsync(x => x.BranchId == branch.Id && (x.Status == "running" || x.Status == "paused"), ct))
-            throw new InvalidOperationException("Finish, retry or cancel the existing story draft before approving an import.");
-        if (branch.HeadCheckpointId != request.ExpectedCheckpointId || branch.HeadCheckpointId != job.ExpectedCheckpointId) throw new DbUpdateConcurrencyException("This branch advanced. Reanalyze on a fork before approval.");
+        if (branch.HeadCheckpointId != request.ExpectedCheckpointId) throw new DbUpdateConcurrencyException("This timeline advanced. Reload before approval.");
         var head = await db.Checkpoints.SingleAsync(x => x.Id == branch.HeadCheckpointId, ct);
         var rows = await db.ImportProposals.Where(x => x.JobId == id && x.Current && !x.Excluded).ToListAsync(ct);
         var claims = rows.Select(x => Json.Read<ImportClaim>(x.ContentJson)).ToArray();
@@ -268,7 +285,7 @@ public static class ImportReview
         if (summary is null) db.Summaries.Add(new CampaignSummary { BranchId = branch.Id, ThroughSequence = checkpoint.Sequence, Text = text });
         else { summary.Text = text; summary.ThroughSequence = checkpoint.Sequence; summary.UpdatedAt = DateTime.UtcNow; }
         db.Checkpoints.Add(checkpoint);
-        db.Messages.Add(new Message { BranchId = branch.Id, Sequence = checkpoint.Sequence, Role = "system", Content = $"Reviewed import approved. Resume at {resume.State.Location}. Objective: {resume.State.Objective}. Open Live world for reconstructed characters, graph, events and memories.", Provider = "manual-review", Model = "agent-v3" });
+        db.Messages.Add(new Message { BranchId = branch.Id, Sequence = checkpoint.Sequence, Role = "system", Content = $"Reviewed import approved. Resume at {resume.State!.Location}. Objective: {resume.State!.Objective}. Open Live world for reconstructed characters, graph, events and memories.", Provider = "manual-review", Model = "agent-v3" });
         branch.HeadCheckpointId = checkpoint.Id; branch.Revision++; job.Status = "approved"; job.ProposalRevision++;
         await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);

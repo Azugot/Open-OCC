@@ -36,7 +36,7 @@ app.Use(async (context, next) =>
         }
     }
     try { await next(); }
-    catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException or DbUpdateConcurrencyException or BadHttpRequestException)
+    catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException or DbUpdateConcurrencyException or BadHttpRequestException or JsonException)
     {
         if (context.Response.HasStarted) throw;
         context.Response.StatusCode = e is KeyNotFoundException ? 404 : e is DbUpdateConcurrencyException ? 409 : 400;
@@ -284,44 +284,36 @@ app.MapPost("/api/branches/{id:guid}/imports", async (Guid id, HttpRequest reque
         throw new InvalidOperationException("Supported uploads: .txt, .md, .html, .docx, or .json, up to 32 MiB, with a filename of at most 200 characters.");
     using var stream = new MemoryStream(); await file.CopyToAsync(stream, ct);
     var bytes = stream.ToArray();
-    var source = new ImportedSource { CampaignId = branch.CampaignId, FileName = name, Bytes = bytes, Sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() };
-    var importProvider = form["provider"].ToString();
-    var importModel = form["model"].ToString();
-    if (importModel.Length > 200 || importModel.Any(char.IsControl)) throw new InvalidOperationException("Model IDs must contain at most 200 characters and no control characters.");
-    if (!string.IsNullOrWhiteSpace(importProvider) && string.IsNullOrWhiteSpace(importModel))
-        importModel = await db.Providers.Where(x => x.Id == importProvider).Select(x => x.Model).SingleOrDefaultAsync(ct) ?? "";
-    var reconstruction = string.IsNullOrWhiteSpace(importProvider) ? await routing.Resolve(db, "reconstruction", ct) :
-        await routing.ResolveCaptured(db, importProvider, importModel, ct);
     var options = new ImportOptions(
         int.TryParse(form["inputCharacterLimit"], out var inputLimit) ? inputLimit : 24000,
         int.TryParse(form["outputTokenLimit"], out var outputLimit) ? outputLimit : 3000,
         int.TryParse(form["maxCalls"], out var maxCalls) ? maxCalls : 100);
-    Reconstruction.ValidateOptions(options);
     var prepareOnly = bool.TryParse(form["prepareOnly"], out var previewRequested) && previewRequested;
-    var job = new ImportJob { BranchId = id, SourceId = source.Id, ExpectedCheckpointId = branch.HeadCheckpointId,
-        Method = Reconstruction.Method, Provider = reconstruction.Profile.Id, Model = reconstruction.Profile.Model,
-        Status = prepareOnly ? "preparing" : "queued",
-        InputCharacterLimit = options.InputCharacterLimit, OutputTokenLimit = options.OutputTokenLimit, MaxCalls = options.MaxCalls };
-    db.AddRange(source, job); await db.SaveChangesAsync(ct);
-    if (prepareOnly)
-    {
-        // Source-first preview is deterministic and makes no provider request.
-        try { await Reconstruction.Step(db, job, null, ct); }
-        catch (Exception error) when (error is InvalidOperationException or System.Xml.XmlException or InvalidDataException or DecoderFallbackException)
-        {
-            // Failed preparation still preserves the exact source for inspection.
-            job.Status = "paused"; job.Error = "Source preparation failed: " + error.Message;
-            await db.SaveChangesAsync(ct);
-        }
-    }
+    Guid? checkpointId = null;
+    if (!string.IsNullOrWhiteSpace(form["checkpointId"]))
+        checkpointId = Guid.TryParse(form["checkpointId"], out var parsed) ? parsed : throw new InvalidOperationException("Invalid destination checkpoint.");
+    var job = await ImportPreparation.Upload(db, routing, id, name, bytes, options, prepareOnly,
+        form["provider"], form["model"], string.IsNullOrWhiteSpace(form["destination"]) ? "current" : form["destination"].ToString(),
+        string.IsNullOrWhiteSpace(form["timelineName"]) ? "Imported story" : form["timelineName"].ToString(), checkpointId, ct);
     return Results.Accepted($"/api/imports/{job.Id}", job);
 });
-app.MapGet("/api/branches/{id:guid}/imports", async (Guid id, StoryDb db) => await db.ImportJobs.Where(x => x.BranchId == id).OrderByDescending(x => x.CreatedAt).ToListAsync());
-app.MapGet("/api/imports/{id:guid}", async (Guid id, StoryDb db) =>
+app.MapGet("/api/branches/{id:guid}/imports", async (Guid id, StoryDb db) => await db.ImportJobs.Where(x => x.BranchId == id).OrderByDescending(x => x.CreatedAt)
+    .Select(x => new { x.Id, x.SourceId, x.BranchId, x.Status, x.Stage, x.Processed, x.Total, x.Error, x.Method, x.CreatedAt,
+        fileName = db.Sources.Where(s => s.Id == x.SourceId).Select(s => s.FileName).First(),
+        timelineName = db.Branches.Where(b => b.Id == x.BranchId).Select(b => b.Name).First() }).ToListAsync());
+app.MapGet("/api/imports/{id:guid}/candidates", async (Guid id, int? page, StoryDb db, CancellationToken ct) =>
+{
+    if (!await db.ImportJobs.AnyAsync(x => x.Id == id, ct)) throw new KeyNotFoundException();
+    var rows = db.Facts.Where(x => x.JobId == id); var index = Math.Max(0, page ?? 0);
+    return Results.Ok(new { total = await rows.CountAsync(ct), page = index, items = await rows.OrderBy(x => x.Id).Skip(index * 20).Take(20)
+        .Select(f => new { fact = f, evidence = db.Evidence.Where(e => e.FactId == f.Id).Join(db.Segments, e => e.SegmentId, s => s.Id,
+            (e, s) => new { s.Id, s.Ordinal, s.Speaker, s.Text }).ToList() }).ToListAsync(ct) });
+});
+app.MapGet("/api/imports/{id:guid}", async (Guid id, bool? includeCandidates, StoryDb db) =>
 {
     var job = await db.ImportJobs.SingleOrDefaultAsync(x => x.Id == id) ?? throw new KeyNotFoundException();
     var source = await db.Sources.Where(x => x.Id == job.SourceId).Select(x => new { x.Id, x.FileName, x.Sha256, size = x.Bytes.Length }).SingleAsync();
-    return Results.Ok(new { job, source, candidates = await db.Facts.Where(x => x.JobId == id).Select(f => new { fact = f, evidence = db.Evidence.Where(e => e.FactId == f.Id).Join(db.Segments, e => e.SegmentId, s => s.Id, (e, s) => new { s.Id, s.Ordinal, s.Speaker, s.Text }).ToList() }).ToListAsync() });
+    return Results.Ok(new { job, source, candidates = includeCandidates == false ? [] : await db.Facts.Where(x => x.JobId == id).Select(f => new { fact = f, evidence = db.Evidence.Where(e => e.FactId == f.Id).Join(db.Segments, e => e.SegmentId, s => s.Id, (e, s) => new { s.Id, s.Ordinal, s.Speaker, s.Text }).ToList() }).ToListAsync() });
 });
 app.MapGet("/api/sources/{id:guid}/download", async (Guid id, StoryDb db) =>
 {
