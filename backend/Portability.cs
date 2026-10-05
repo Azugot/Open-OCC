@@ -61,7 +61,7 @@ public static class PortabilityService
         var mechanics = await db.Mechanics.AsNoTracking().Where(x => branchIds.Contains(x.BranchId)).ToListAsync(ct);
         var events = await db.Events.AsNoTracking().Where(x => branchIds.Contains(x.BranchId)).ToListAsync(ct);
         var summaries = await db.Summaries.AsNoTracking().Where(x => branchIds.Contains(x.BranchId)).ToListAsync(ct);
-        return new(4, campaign, branches, checkpoints, messages, runs, sources, jobs, segments, facts, evidence, corrections, threads, worlds, worldVersions, characters, relationships, knowledge, mechanics, events, summaries,
+        return new(5, campaign, branches, checkpoints, messages, runs, sources, jobs, segments, facts, evidence, corrections, threads, worlds, worldVersions, characters, relationships, knowledge, mechanics, events, summaries,
             await db.ImportSections.AsNoTracking().Where(x => jobIds.Contains(x.JobId)).ToListAsync(ct),
             await db.ImportProposals.AsNoTracking().Where(x => jobIds.Contains(x.JobId)).ToListAsync(ct),
             await db.ImportIssues.AsNoTracking().Where(x => jobIds.Contains(x.JobId)).ToListAsync(ct),
@@ -71,10 +71,13 @@ public static class PortabilityService
 
     public static async Task<Branch> Import(StoryDb db, PortableExport portable, string? nameOverride, CancellationToken ct)
     {
-        if (portable.Version is not (1 or 2 or 3 or 4) || portable.Campaign is null || portable.Branches is null || portable.Checkpoints is null)
+        if (portable.Version is not (1 or 2 or 3 or 4 or 5) || portable.Campaign is null || portable.Branches is null || portable.Checkpoints is null)
             throw new InvalidOperationException("Unsupported or incomplete Open-OCC export.");
         var campaign = new Campaign { Name = string.IsNullOrWhiteSpace(nameOverride) ? portable.Campaign.Name : nameOverride.Trim() };
         CampaignService.RequireText(campaign.Name, 100, "Campaign name");
+        campaign.RollModeEnabled = portable.Campaign.RollModeEnabled;
+        if (portable.Campaign.GeneralInstructions is null || portable.Campaign.GeneralInstructions.Length > 8000) throw new InvalidOperationException("General instructions must be at most 8000 characters.");
+        campaign.GeneralInstructions = portable.Campaign.GeneralInstructions.Trim();
         var branchMap = portable.Branches.ToDictionary(x => x.Id, _ => Guid.NewGuid());
         var checkpointMap = portable.Checkpoints.ToDictionary(x => x.Id, _ => Guid.NewGuid());
         var sourceMap = portable.Sources.ToDictionary(x => x.Id, _ => Guid.NewGuid());

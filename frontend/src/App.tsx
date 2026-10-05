@@ -27,6 +27,7 @@ import {
   streamTurn,
 } from "./api";
 import StoryEngine from "./StoryEngine";
+import CampaignSettings from "./CampaignSettings";
 import ModelPicker from "./ModelPicker";
 import ImportReview from "./ImportReview";
 import DeleteStoryModal from "./DeleteStoryModal";
@@ -637,6 +638,10 @@ export default function App() {
                   </span>
                 </div>
               </div>
+                <CampaignSettings key={workspace.campaign.id} campaign={workspace.campaign} busy={busy} onSaved={campaign => {
+                  setWorkspace(current => current ? { ...current, campaign } : current);
+                  setCampaigns(current => current.map(c => c.id === campaign.id ? { ...c, ...campaign } : c));
+                }} />
               <div className="scene-location">
                 <MapPin size={15} /> {workspace.state.location}
               </div>

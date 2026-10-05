@@ -119,6 +119,9 @@ public static class StoryEngine
             if (branch.HeadCheckpointId != run.ExpectedCheckpointId) throw new DbUpdateConcurrencyException();
             var cp = await db.Checkpoints.SingleAsync(x => x.Id == run.ExpectedCheckpointId, ct);
             var draft = run.DraftJson == "{}" ? new TurnDraft { World = StoryWorld.From(cp), State = Json.Read<StoryState>(cp.StateJson) } : Json.Read<TurnDraft>(run.DraftJson);
+            var campaign = await db.Campaigns.SingleAsync(x => x.Id == branch.CampaignId, ct);
+            // Legacy saved turns began before campaign guidance existed: preserve their original defaults.
+            draft.Guidance ??= run.DraftJson == "{}" ? CampaignGuidance.From(campaign) : new CampaignGuidance();
             var w = draft.World;
             w.Settings.Validate();
             run.Status = "running"; run.Error = null;
@@ -128,7 +131,6 @@ public static class StoryEngine
             var facts = await db.Facts.Where(x => x.BranchId == run.BranchId && x.ReviewStatus == "accepted" && x.EffectiveSequence <= cp.Sequence)
                 .OrderByDescending(x => x.EffectiveSequence).ToListAsync(ct);
             var allFacts = facts.Select(x => $"[{x.Kind}; confidence {x.Confidence}; known by {x.KnownByJson}] {x.Text}").ToArray();
-            var campaign = await db.Campaigns.SingleAsync(x => x.Id == branch.CampaignId, ct);
             var version = campaign.WorldVersionId is { } versionId ? await db.WorldVersions.SingleAsync(x => x.Id == versionId, ct) : null;
             var people = await db.Characters.Where(x => x.CampaignId == branch.CampaignId).ToListAsync(ct);
             var knowledge = await db.Knowledge.Where(x => x.BranchId == branch.Id && x.EffectiveSequence <= cp.Sequence).ToListAsync(ct);
@@ -248,7 +250,7 @@ public static class StoryEngine
             {
                 var existing = draft.Steps.SingleOrDefault(x => x.Key == key);
                 if (existing is not null) return Json.Read<T>(existing.ResultJson);
-                var instructions = Instructions(task) + (draft.ValidationFeedback.TryGetValue(key, out var feedback)
+                var instructions = Instructions(task) + draft.Guidance.Prompt + (draft.ValidationFeedback.TryGetValue(key, out var feedback)
                     ? "\nPrevious response failed validation: " + feedback + " Regenerate this task using only supplied IDs and the required fields/types." : "");
                 try
                 {
@@ -267,7 +269,7 @@ public static class StoryEngine
             }
             async Task<DiceCheck?> Check(string key, string actor, Attempt attempt)
             {
-                if (!attempt.Uncertain) return null;
+                if (!draft.Guidance.RollModeEnabled || !attempt.Uncertain) return null;
                 if (!draft.Rolls.TryGetValue(key, out var check))
                 {
                     check = Roll(key, actor, attempt); draft.Rolls.Add(key, check); w.Checks.Add(check); await Save();

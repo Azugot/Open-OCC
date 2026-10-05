@@ -99,6 +99,8 @@ export type Branch = {
   headCheckpointId: string;
 };
 export type Campaign = {
+  rollModeEnabled: boolean;
+  generalInstructions: string;
   id: string;
   name: string;
   createdAt: string;

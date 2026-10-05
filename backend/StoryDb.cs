@@ -34,6 +34,7 @@ public class StoryDb(DbContextOptions<StoryDb> options) : DbContext(options)
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<AppSetting>().HasKey(x => x.Key);
+        b.Entity<Campaign>().Property(x => x.RollModeEnabled).HasDefaultValue(true);
         b.Entity<Branch>().Property(x => x.Revision).IsConcurrencyToken();
         b.Entity<ImportJob>().Property(x => x.Status).IsConcurrencyToken();
         b.Entity<GenerationRun>().Property(x => x.Status).IsConcurrencyToken();

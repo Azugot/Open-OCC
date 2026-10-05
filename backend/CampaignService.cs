@@ -3,6 +3,16 @@ using Microsoft.EntityFrameworkCore;
 namespace Story;
 
 public record CreateCampaign(string Name, bool Synthetic = true, Guid? WorldVersionId = null);
+public record CampaignSettingsUpdate(bool RollModeEnabled, string GeneralInstructions);
+public record CampaignGuidance(bool RollModeEnabled = true, string GeneralInstructions = "")
+{
+    public static CampaignGuidance From(Campaign campaign) => new(campaign.RollModeEnabled, campaign.GeneralInstructions);
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string Prompt => "\n\nCAMPAIGN GENERAL INSTRUCTIONS (take priority over world author instructions and creative defaults; accommodate player intent coherently):\n"
+        + GeneralInstructions + "\nMandatory privacy, player agency, required output schemas and validated state rules remain in force. "
+        + (RollModeEnabled ? "The explicit roll toggle is ON. In autonomous mode, use server checks for uncertain attempts."
+            : "The explicit roll toggle is OFF. Resolve attempts narratively without dice, rolls or invented check results.");
+}
 public record TurnRequest(Guid ExpectedCheckpointId, string Action);
 public record ForkRequest(Guid CheckpointId, string Name);
 public record ReviewDecision(Guid FactId, bool Accept, string Text, string Visibility, string Kind = "fact", double Confidence = 1, string[]? KnownBy = null);
@@ -18,6 +28,16 @@ public record ApplyMechanicsRequest(Guid ExpectedCheckpointId, string Kind, stri
 
 public static class CampaignService
 {
+    public static async Task<Campaign> UpdateSettings(StoryDb db, Guid id, CampaignSettingsUpdate request, CancellationToken ct)
+    {
+        if (request.GeneralInstructions is null || request.GeneralInstructions.Length > 8000)
+            throw new InvalidOperationException("General instructions must be at most 8000 characters.");
+        var campaign = await db.Campaigns.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException();
+        campaign.RollModeEnabled = request.RollModeEnabled;
+        campaign.GeneralInstructions = request.GeneralInstructions.Trim();
+        await db.SaveChangesAsync(ct);
+        return campaign;
+    }
     public static async Task<Branch> Create(StoryDb db, CreateCampaign request, CancellationToken ct, EngineSettings? settings = null)
     {
         RequireText(request.Name, 100, "Campaign name");

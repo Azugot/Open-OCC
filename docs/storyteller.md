@@ -1,5 +1,15 @@
 # Autonomous storyteller slice
 
+## Campaign guidance
+
+Open **Campaign settings** on the story page to save **Roll mode** and **General instructions** for all timelines in a campaign. Roll mode starts on; turning it off keeps autonomous characters and the director active while resolving attempts without d20 checks. Narrator mode always resolves without server dice.
+
+General instructions accept up to 8,000 characters and take priority over world author guidance and creative defaults in story-generation prompts. Privacy, player agency, output schemas, validated state and the explicit roll toggle remain enforced. Import reconstruction and continuity extraction keep their evidence-based contracts.
+
+Settings apply to new turns. Started turns and paused retries retain their captured settings; legacy paused drafts retain rolls on and blank guidance. Campaign exports use version 5 and preserve these settings; imports still accept versions 1–4 with defaults when fields are absent.
+
+`PUT /api/campaigns/{id}/settings` accepts `{ "rollModeEnabled": true, "generalInstructions": "..." }` and returns the updated campaign. Campaign list and workspace responses include both fields.
+
 Create a synthetic Crownspire campaign, submit an action, and open **Live world**. The fixture needs no credentials. **Author view** reveals private character workspaces, off-screen activity, all graph entities, dice and each owner's memories. It is a spoiler preference for this single-user app, not an access-control boundary.
 
 ## Turn execution

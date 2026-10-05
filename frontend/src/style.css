@@ -1167,6 +1167,20 @@ input[type="checkbox"] {
   }
 }
 .model-picker { min-width: 0; margin: 0 0 1rem; }
+.campaign-settings { margin: 16px 0; }
+.campaign-settings summary { cursor: pointer; font-weight: 600; }
+.campaign-settings form { display: grid; gap: 12px; margin-top: 16px; }
+.campaign-settings label { display: grid; gap: 8px; }
+.campaign-settings .campaign-roll-toggle { display: flex; flex-direction: row; align-items: center; justify-content: flex-start; gap: 10px; }
+.campaign-roll-toggle input { appearance: none; position: relative; width: 40px; height: 22px; min-height: 0; padding: 0; margin: 0; border: 1px solid #9ba895; border-radius: 20px; background: #dce3d7; flex-shrink: 0; cursor: pointer; }
+.campaign-roll-toggle input::before { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px #0003; transition: transform .15s; }
+.campaign-roll-toggle input:checked { background: #526848; }
+.campaign-roll-toggle input:checked::before { transform: translateX(18px); }
+.campaign-roll-toggle input:focus-visible { outline: 2px solid #526848; outline-offset: 3px; }
+.campaign-roll-toggle input:disabled { opacity: .6; cursor: default; }
+.campaign-settings textarea { width: 100%; box-sizing: border-box; resize: vertical; }
+.campaign-settings p { margin: 0; font-size: .85rem; }
+.campaign-settings button { justify-self: start; }
 .model-discovery-status { display: flex; align-items: center; gap: .7rem; justify-content: space-between; margin: -.25rem 0 .65rem; }
 .model-discovery-status small { flex: 1; }
 .model-discovery-status button { font-size: .78rem; flex-shrink: 0; }

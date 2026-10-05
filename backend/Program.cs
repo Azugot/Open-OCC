@@ -64,7 +64,8 @@ if (!app.Environment.IsEnvironment("Testing"))
 }
 app.MapGet("/health", async (StoryDb db) => await db.Database.CanConnectAsync() ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
 app.MapGet("/api/campaigns", async (StoryDb db, CancellationToken ct) => await db.Campaigns.OrderByDescending(x => x.CreatedAt).Select(c => new
-    { c.Id, c.Name, c.CreatedAt, branches = db.Branches.Where(b => b.CampaignId == c.Id).OrderBy(b => b.CreatedAt).Select(b => new { b.Id, b.Name }).ToList() }).ToListAsync(ct));
+    { c.Id, c.Name, c.CreatedAt, c.RollModeEnabled, c.GeneralInstructions, branches = db.Branches.Where(b => b.CampaignId == c.Id).OrderBy(b => b.CreatedAt).Select(b => new { b.Id, b.Name }).ToList() }).ToListAsync(ct));
+app.MapPut("/api/campaigns/{id:guid}/settings", async (Guid id, CampaignSettingsUpdate request, StoryDb db, CancellationToken ct) => Results.Ok(await CampaignService.UpdateSettings(db, id, request, ct)));
 app.MapGet("/api/worlds", async (StoryDb db, CancellationToken ct) => await db.Worlds.OrderBy(x => x.Name).Select(x => new { world = x, versions = db.WorldVersions.Where(v => v.WorldId == x.Id).OrderByDescending(v => v.Version).ToList() }).ToListAsync(ct));
 app.MapDelete("/api/campaigns/{id:guid}", async (Guid id, StoryDb db, CancellationToken ct) =>
 {

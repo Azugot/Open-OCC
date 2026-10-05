@@ -137,6 +137,7 @@ public record NarrativeReply(string Narrative);
 public record DraftStep(string Key, string Task, string ResultJson, DateTime CompletedAt);
 public sealed class TurnDraft
 {
+    public CampaignGuidance? Guidance { get; set; }
     public StoryWorld World { get; set; } = new();
     public List<DraftStep> Steps { get; set; } = [];
     public Dictionary<string, string> ValidationFeedback { get; set; } = new();
