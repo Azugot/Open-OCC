@@ -4,7 +4,7 @@ const state = { location: 'Harbor', time: 'Day 7 · noon', objective: 'Cross the
 function result(input) {
   const evidence = JSON.parse(input.split('EVIDENCE:\n')[1].split('\nRELATED LEDGER:')[0]);
   const cite = evidence.slice(0, 1).map(x => x.ordinal);
-  const resume = { state, evidenceOrdinals: cite, latestAction: 'Pack two rations', replyPending: true, missing: [] };
+  const resume = { state, evidenceOrdinals: cite, latestAction: 'Pack two rations', replyPending: true, missing: [], playerCharacterName: "Mara" };
   const base = { claims: [], issues: [], resume: null, summary: 'Mara and Lyra prepare to cross the bay at noon.', resolvedIssueCodes: [] };
   if (input.startsWith('STAGE: audit') || input.startsWith('STAGE: reconcile')) return base;
   if (input.startsWith('STAGE: resume')) return { ...base, resume };
@@ -21,6 +21,10 @@ function result(input) {
 }
 createServer(async (req, res) => {
   try {
+    if (req.method === 'GET' && req.url?.endsWith('/models')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'scripted' }, { id: 'scripted-invalid' }] })); return;
+    }
     let data = ''; for await (const chunk of req) { data += chunk; if (data.length > 1_000_000) throw Error('Request too large'); }
     const body = JSON.parse(data || '{}');
     const content = body.model === 'scripted-invalid' ? '{truncated' : JSON.stringify(result(body.messages.at(-1).content));

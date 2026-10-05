@@ -17,9 +17,9 @@ const passage = "Mara is a navigator with Navigation F · 2/5. Lyra is her trust
 const transcript = `Character Preview\n\n⚔️\n\n${Array.from({ length: 450 }, (_, i) => `Passage ${i + 1}: ${passage}`).join('\n\n')}\n\nPlayer: Pack two rations. At the Harbor on Day 7 at noon, Mara and Lyra prepare to cross the bay.`;
 const form = new FormData(); form.append('file', new Blob([transcript]), 'long-transcript.txt');
 const upload = await fetch(`${base}/api/branches/${branch.id}/imports`, { method: 'POST', headers: { 'X-Open-OCC': '1' }, body: form }); const uploaded = await upload.text(); assert.equal(upload.status, 202, uploaded); const job = JSON.parse(uploaded);
-let draft = await wait(job.id, 'review'); assert.ok(draft.job.total > 450); assert.equal(draft.job.processed, draft.job.total); assert.equal(draft.job.reviewCompleted, true); assert.equal(draft.resume.state.location, 'Harbor');
+let draft = await wait(job.id, 'review'); assert.ok(draft.job.total > 1); assert.ok(draft.job.total < 450); assert.equal(draft.job.processed, draft.job.total); assert.equal(draft.job.reviewCompleted, true); assert.equal(draft.resume.state.location, 'Harbor');
 const proposals = await call(`/imports/${job.id}/proposals`); assert.equal(proposals.total, 10);
-assert.ok((await call(`/imports/${job.id}/evidence`)).items.some(x => x.artifact));
+assert.ok((await call(`/imports/${job.id}/evidence`)).items.some(x => x.text.includes("⚔️")));
 assert.equal((await call(`/branches/${branch.id}`)).facts.length, 0);
 const selected = proposals.items.find(x => x.claim.key === 'character:mara');
 await call(`/imports/${job.id}/proposals/${selected.proposal.id}`, { revision: draft.job.proposalRevision - 1, claim: selected.claim, excluded: false }, 'PUT', 409);
@@ -27,7 +27,7 @@ await call(`/imports/${job.id}/proposals/${selected.proposal.id}`, { revision: d
 draft = await call(`/imports/${job.id}/draft`);
 assert.match((await call(`/imports/${job.id}/proposals?q=expedition`)).items[0].claim.text, /expedition/);
 await call(`/imports/${job.id}/approval`, { expectedCheckpointId: branch.headCheckpointId, revision: draft.job.proposalRevision }, 'POST', 204);
-const view = await call(`/branches/${branch.id}`); assert.equal(view.state.location, 'Harbor'); assert.equal(view.state.inventory.Rations, 2); assert.equal(view.characters.length, 2); assert.equal(view.relationships.length, 1); assert.equal(view.knowledge.length, 1); assert.ok(view.messages.length > 450);
+const view = await call(`/branches/${branch.id}`); assert.equal(view.state.location, 'Harbor'); assert.equal(view.state.inventory.Rations, 2); assert.equal(view.characters.length, 2); assert.equal(view.relationships.length, 1); assert.equal(view.knowledge.length, 1); assert.ok(view.messages.length < 10); assert.ok((await call(`/branches/${branch.id}/transcripts`)).items.length === 1);
 const exported = await call(`/campaigns/${branch.campaignId}/export`); const copied = await call('/campaigns/import', { export: exported, name: 'Restored import verification' });
 const restored = await call(`/branches/${copied.id}`); assert.deepEqual(restored.state, view.state); assert.equal(restored.characters.length, 2);
 const bytes = Buffer.from(await (await fetch(`${base}/api/sources/${job.sourceId}/download`)).arrayBuffer()); assert.equal(createHash('sha256').update(bytes).digest('hex'), createHash('sha256').update(transcript).digest('hex'));
@@ -37,5 +37,5 @@ const failed = await call(`/imports/${job.id}/reanalyze`, { maxCalls: 100, input
 const paused = await wait(failed.id, 'paused'); assert.equal(paused.job.processed, 0); assert.equal(paused.job.calls, 2); assert.equal((await call(`/imports/${failed.id}/proposals`)).total, 0);
 await call('/providers/deepseek', { model: 'scripted', enabled: true }, 'PUT', 204);
 await call(`/imports/${failed.id}/resume-processing`, { provider: 'deepseek', model: 'scripted' }); await wait(failed.id, 'review');
-console.log(`PASS: ${draft.job.total} passages consolidated into 10 proposals; reviewed ending, saved edits, stale-revision rejection, PostgreSQL approval, portable restore, immutable source, invalid model pause/retry.`);
+console.log(`PASS: ${draft.job.total} source blocks consolidated into 10 proposals; reviewed ending, saved edits, stale-revision rejection, PostgreSQL approval, portable restore, immutable source, invalid model pause/retry.`);
 console.log(`Browser verification campaign: ${branch.id}`);
