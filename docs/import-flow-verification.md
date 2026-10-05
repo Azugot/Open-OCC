@@ -23,3 +23,11 @@ The isolated stack at `localhost:8082` used synthetic sources and a recorded mod
 The browser viewport override did not change the actual 1280×720 viewport, even after reload and opening another tab. Mobile CSS is implemented and builds, but a true narrow-viewport visual check remains unverified.
 
 The scripted model proves request/response and persistence behavior. It does not establish live-model interpretation quality. The NuGet vulnerability metadata feed was unavailable locally; this did not prevent compilation or test execution.
+
+## Follow-up: entity validation repairs
+
+- Full .NET suite: **188 passed**, including entity schema requirements, precise claim-index/key feedback, both missing entity fields, bounded rejected-result feedback at a 12,000-character limit, unsupported-kind rejection, and accurate accounting when no repair request fits.
+- The schema and repair-feedback regression cases failed against the previous implementation before the fix.
+- `tests/entity-repair-smoke.mjs` passed against isolated PostgreSQL and the recorded HTTP model. The first extract response deliberately omitted the entity name and kind; the repair request included both field errors and the rejected entity. The corrected draft reached review with complete coverage and preserved original bytes.
+- The existing long-transcript `tests/import-smoke.mjs` also passed, including saved edits, stale-revision rejection, approval, portable restore, original source download, and pause/retry.
+- No live model calls were made. Lower real-model failure frequency remains to be observed on subsequent imports; strict evidence and state validation remain in force.

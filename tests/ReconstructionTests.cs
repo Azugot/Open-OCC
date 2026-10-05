@@ -242,6 +242,86 @@ public class ReconstructionTests : IAsyncLifetime
         Assert.True(job.Processed > 0);
     }
     [Fact]
+    public void EntitySchemaRequiresSupportedKindAndNonblankNameOnlyForEntities()
+    {
+        var claim = Reconstruction.Schema.GetProperty("properties").GetProperty("claims").GetProperty("items");
+        var variants = claim.GetProperty("anyOf").EnumerateArray().ToArray();
+        var entity = variants.Single(x => x.GetProperty("properties").GetProperty("category").GetProperty("enum").EnumerateArray().Any(v => v.GetString() == "entity"));
+        Assert.Contains(entity.GetProperty("required").EnumerateArray(), x => x.GetString() == "entityKind");
+        Assert.Equal("\\S", entity.GetProperty("properties").GetProperty("subject").GetProperty("pattern").GetString());
+        Assert.DoesNotContain(entity.GetProperty("properties").GetProperty("entityKind").GetProperty("enum").EnumerateArray(), x => x.ValueKind == JsonValueKind.Null);
+        Assert.DoesNotContain(claim.GetProperty("required").EnumerateArray(), x => x.GetString() == "entityKind");
+        Reconstruction.ValidateClaim(Claim("fact:harbor", "fact", "The harbor is quiet.", [0]), [0], []);
+    }
+    [Fact]
+    public async Task EntityRepairReceivesClaimIndexKeyRejectedDataAndBothMissingFields()
+    {
+        await using var db = Db(); var job = await Create(db); await Reconstruction.Step(db, job, null, default);
+        var prompts = new List<ProviderPrompt>();
+        var model = new Scripted(p => {
+            prompts.Add(p);
+            return prompts.Count == 1 ? new([Claim("fact:wait", "fact", "Mara waits.", Evidence(p)), Claim("entity:harbor", "entity", "Harbor is the departure point.", Evidence(p))], [], null, "Mara waits.", []) : Respond(p);
+        });
+        await Reconstruction.Step(db, job, model, default);
+        Assert.Equal(2, prompts.Count);
+        Assert.Contains("claims[1] (entity:harbor)", prompts[1].Input);
+        Assert.Contains("entityKind", prompts[1].Input); Assert.Contains("subject", prompts[1].Input);
+        Assert.Contains("REJECTED", prompts[1].Input); Assert.Contains("\"entityKind\":null", prompts[1].Input);
+        Assert.Contains("entity:harbor", prompts[0].Instructions);
+        Assert.All(prompts, p => Assert.True(p.Input.Length + p.Instructions.Length + Reconstruction.Schema.GetRawText().Length <= job.InputCharacterLimit));
+        Assert.True(job.Processed > 0);
+    }
+    [Fact]
+    public async Task RepeatedInvalidEntityStaysUncommittedAndReportsExactClaim()
+    {
+        await using var db = Db(); var job = await Create(db); await Reconstruction.Step(db, job, null, default);
+        var model = new Scripted(p => new([Claim("entity:harbor", "entity", "Harbor.", Evidence(p))], [], null, "", []));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Reconstruction.Step(db, job, model, default));
+        Assert.Contains("claims[0] (entity:harbor)", error.Message);
+        Assert.Contains("entityKind", error.Message); Assert.Contains("subject", error.Message);
+        Assert.Equal(2, job.Calls); Assert.Equal(0, job.Processed); Assert.Empty(await db.ImportProposals.ToListAsync());
+    }
+    [Fact]
+    public async Task OversizedRejectedResultUsesExactBadClaimsWithoutExceedingRepairBudget()
+    {
+        await using var db = Db(); var job = await Create(db); job.InputCharacterLimit = 12000; await db.SaveChangesAsync();
+        await Reconstruction.Step(db, job, null, default);
+        var prompts = new List<ProviderPrompt>();
+        var model = new Scripted(p => {
+            prompts.Add(p);
+            if (prompts.Count > 1) return Respond(p);
+            var claims = Enumerable.Range(0, 12).Select(i => Claim($"fact:detail-{i}", "fact", new string('t', 900), Evidence(p), value: new string('v', 900)))
+                .Append(Claim("entity:harbor", "entity", "Harbor.", Evidence(p))).ToArray();
+            return new(claims, [], null, "Mara waits.", []);
+        });
+        await Reconstruction.Step(db, job, model, default);
+        Assert.Contains("REJECTED CLAIMS", prompts[1].Input);
+        Assert.Contains("claims[12] (entity:harbor)", prompts[1].Input);
+        Assert.Contains("\"index\":12", prompts[1].Input);
+        Assert.Equal(Evidence(prompts[0]), Evidence(prompts[1]));
+        Assert.All(prompts, p => Assert.True(p.Input.Length + p.Instructions.Length + Reconstruction.Schema.GetRawText().Length <= job.InputCharacterLimit));
+        Assert.True(job.Processed > 0);
+    }
+    [Theory]
+    [InlineData(null, "Harbor")]
+    [InlineData("location", "Harbor")]
+    [InlineData("place", " ")]
+    public void MissingNamesAndUnsupportedKindsAreNeverInferred(string? kind, string subject)
+    {
+        var claim = Claim("entity:harbor", "entity", "Harbor.", [0], subject) with { EntityKind = kind };
+        Assert.Throws<InvalidOperationException>(() => Reconstruction.ValidateClaim(claim, [0], []));
+    }
+    [Fact]
+    public async Task RepairThatCannotFitRejectedClaimsDoesNotCountAnUnsentRequest()
+    {
+        await using var db = Db(); var job = await Create(db); job.InputCharacterLimit = 12000; await db.SaveChangesAsync();
+        await Reconstruction.Step(db, job, null, default);
+        var model = new Scripted(p => new(Enumerable.Range(0, 16).Select(i => Claim($"entity:bad-{i}", "entity", new string('t', 900), Evidence(p), value: new string('v', 900))).ToArray(), [], null, "", []));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Reconstruction.Step(db, job, model, default));
+        Assert.Contains("no repair request was sent", error.Message); Assert.Equal(1, job.Calls);
+        Assert.Equal(0, job.Processed); Assert.Empty(await db.ImportProposals.ToListAsync());
+    }
+    [Fact]
     public void LiteralNewlinesInJsonStringsAreEscapedWithoutChangingTheText()
     {
         var malformed = "```json\n{\"summary\":\"first line\nsecond line\tend\",\"path\":\"C:\\\\tmp\",\"quote\":\"say \\\"hi\\\"\"}\n```";
