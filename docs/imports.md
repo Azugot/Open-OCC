@@ -45,6 +45,8 @@ Each validated stage result, draft revision, coverage checkpoint, and usage save
 
 Budgets default to 24,000 input characters including instructions/schema/context, 3,000 output tokens, and 100 calls. Limits are adjustable before upload and on retry. Calls include repair attempts. Budget exhaustion pauses processing. Reported tokens are shown where available; monetary costs are not invented.
 
+During reconstruction, the progress bar covers reading, reconciliation, final-scene recovery, evidence checks, and targeted correction. Reading every source block completes only the first stage. The panel shows completed review batches, the current activity (including validation repairs), and the elapsed model-request time. Overall percentage uses estimated stage weights and reaches 100% only when the draft reaches review. A rough completion range appears after at least two recorded request durations and a usable batch plan; future review work and model repairs can change it. An unusually slow request hides the outdated estimate and retains its elapsed timer. Timing metadata is preserved with stage results, so reloads and resumed runs keep it; historical jobs acquire timing samples on subsequent requests.
+
 ## Human approval boundary
 
 The review page shows readiness, coverage, conflicts, missing information, category filters, search, 20 proposals per page, and an evidence drawer. Clear proposals are included by default. Users can edit/exclude proposals, save issue resolutions, and edit resume fields or advanced JSON. Saved decisions survive reload; proposal revisions reject stale writes. Legacy candidates are also paginated in the interface.

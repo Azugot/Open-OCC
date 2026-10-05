@@ -4,13 +4,15 @@ import type { Job, Profiles } from "./api";
 import ModelPicker from "./ModelPicker";
 import { StructurePreview, TranscriptDrawer } from "./TranscriptViewer";
 import ImportSteps from "./ImportSteps";
+import ImportProgress from "./ImportProgress";
+import type { ReconstructionProgress } from "./ImportProgress";
 import EvidenceDrawer from "./SourceEvidenceDrawer";
 import { IssueCard, ProposalCard, ResumeCard } from "./ImportEditors";
 import type { Proposal, Resume, Issue } from "./ImportEditors";
 import { useUnsaved } from "./UnsavedChanges";
 
 type Blocker = { code: string; message: string; proposalId?: string; issueId?: string; field?: string };
-type Draft = { job: Job; source: { id: string; fileName: string; sha256: string }; resume: Resume | null; issues: Issue[]; groups: { category: string; count: number }[]; conflicts: { proposalId: string; key: string; text: string }[]; approval: { canApprove: boolean; blockers: Blocker[] }; branch: { id: string; name: string }; campaignName: string };
+type Draft = { job: Job; progress?: ReconstructionProgress; source: { id: string; fileName: string; sha256: string }; resume: Resume | null; issues: Issue[]; groups: { category: string; count: number }[]; conflicts: { proposalId: string; key: string; text: string }[]; approval: { canApprove: boolean; blockers: Blocker[] }; branch: { id: string; name: string }; campaignName: string };
 const categories = ["fact", "character", "relationship", "knowledge", "world", "event", "inventory", "skill", "condition", "thread", "entity", "connection"];
 
 export default function ImportReview({ id, expectedCheckpointId, onApproved, onReanalyzed, onNewSource }: { id: string; expectedCheckpointId: string; onApproved: () => Promise<void>; onReanalyzed: (id: string) => Promise<void>; onNewSource: () => void }) {
@@ -79,8 +81,7 @@ export default function ImportReview({ id, expectedCheckpointId, onApproved, onR
       {draft.job.stage === "normalize" && <><button disabled={busy} onClick={() => void perform(async () => { await post(`/imports/${id}/prepare`); await load(); })}>Retry source preview</button><button onClick={() => move(onNewSource)}>Choose a corrected file</button></>}
     </section>}
     {(working || stopped && (configure || !prepared && draft.job.stage !== "normalize")) && <section className="panel"><h2>{working ? "Reconstructing your story" : prepared ? "Choose how to reconstruct" : "Reconstruction paused"}</h2>
-      <p>{draft.job.processed}/{draft.job.total || "?"} source {grouped ? "blocks" : "passages"} read · {stageName(draft.job.stage)}</p>
-      <p>{draft.job.calls}/{draft.job.maxCalls} calls used. Reading all source text does not mean every detail has been recovered.</p>
+      {!prepared && <ImportProgress job={draft.job} progress={draft.progress} grouped={grouped} />}
       {draft.job.error && <p role="alert" className="text-error">{draft.job.error}</p>}
       {working ? <><p>You can leave this screen and return from import history. Processing continues in the background.</p><button disabled={busy} onClick={() => void perform(async () => { await post(`/imports/${id}/cancel`); await load(); })}>Pause reconstruction</button></> : <>
         <label>Reconstruction provider<select disabled={busy} value={provider} onChange={e => { setProvider(e.target.value); setModel(profiles?.profiles.find(p => p.id === e.target.value)?.model || ""); }}><option value="">Choose a configured provider</option>{profiles?.profiles.filter(p => p.enabled && p.adapter !== "fixture" && p.adapterConfigured !== false).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
@@ -115,5 +116,4 @@ export default function ImportReview({ id, expectedCheckpointId, onApproved, onR
     {browse && <TranscriptDrawer sourceId={draft.source.id} jobId={id} close={() => setBrowse(false)} />}
   </div>;
 }
-function stageName(stage?: string) { return ({ normalize: "Preparing source", extract: "Reading the source", reconcile: "Reconciling details", resume: "Recovering the final scene", audit: "Checking evidence", repair: "Repairing inconsistencies", complete: "Ready for review" } as Record<string, string>)[stage || ""] || stage || "Waiting"; }
 function Budgets({ inputLimit, outputLimit, maxCalls, setInputLimit, setOutputLimit, setMaxCalls, disabled }: { inputLimit: number; outputLimit: number; maxCalls: number; setInputLimit: (x: number) => void; setOutputLimit: (x: number) => void; setMaxCalls: (x: number) => void; disabled: boolean }) { return <details><summary>Advanced: processing budgets</summary>{[["Input characters per call", inputLimit, 12000, 120000, setInputLimit], ["Output tokens per call", outputLimit, 1000, 12000, setOutputLimit], ["Total model calls", maxCalls, 1, 1000, setMaxCalls]].map(([label, value, min, max, change]) => <label key={label as string}>{label as string}<input disabled={disabled} type="number" min={min as number} max={max as number} value={value as number} onChange={e => (change as (x: number) => void)(Number(e.target.value))} /></label>)}<small>Calls include analysis, review, and repairs. Processing pauses when the budget is used. No provider cost estimate is assumed.</small></details>; }

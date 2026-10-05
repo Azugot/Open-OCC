@@ -26,7 +26,7 @@ public static class ImportReview
             var branch = await db.Branches.Where(x => x.Id == job.BranchId).Select(x => new { x.Id, x.Name, x.CampaignId }).SingleAsync(ct);
             var campaignName = await db.Campaigns.Where(x => x.Id == branch.CampaignId).Select(x => x.Name).SingleAsync(ct);
             var source = await db.Sources.Where(x => x.Id == job.SourceId).Select(x => new { x.Id, x.FileName, x.Sha256, size = x.Bytes.Length }).SingleAsync(ct);
-            return Results.Ok(new { job, source, resume, conflicts, validationErrors, approval, branch, campaignName,
+            return Results.Ok(new { job, source, resume, conflicts, validationErrors, approval, branch, campaignName, progress = await ImportProgress.Read(db, job, ct),
                 issues = await db.ImportIssues.Where(x => x.JobId == id).OrderByDescending(x => x.Blocking).ThenBy(x => x.Code).ToListAsync(ct),
                 groups = await db.ImportProposals.Where(x => x.JobId == id && x.Current).GroupBy(x => x.Category).Select(x => new { category = x.Key, count = x.Count() }).ToListAsync(ct),
                 sections = await db.ImportSections.CountAsync(x => x.JobId == id, ct) });

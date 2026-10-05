@@ -246,10 +246,17 @@ public static class Reconstruction
             if (job.Calls >= job.MaxCalls) throw new InvalidOperationException("Import call budget exhausted. Increase the budget to resume." +
                 (validationError is null ? "" : " Last validation error: " + validationError));
             var request = attempt == 0 ? prompt : RepairPrompt(prompt, completion!.Text, validationError!, validationFailure!, job.InputCharacterLimit);
-            job.Calls++; await db.SaveChangesAsync(ct); // Count requests, including calls interrupted before result persistence.
+            job.Calls++;
+            var startedAt = DateTime.UtcNow;
+            var timing = new ImportStageResult { JobId = job.Id, Stage = ImportProgress.TimingStage, Ordinal = job.Calls,
+                Provider = job.Provider, Model = job.Model, ResultJson = Json.Write(new ImportRequestTiming(mode, attempt > 0, startedAt)) };
+            db.ImportResults.Add(timing);
+            await db.SaveChangesAsync(ct); // Count requests, including calls interrupted before result persistence.
             try { completion = await provider.Complete(request, Schema, ct); }
             catch (OperationCanceledException e) when (!ct.IsCancellationRequested)
             { throw new InvalidOperationException("The reconstruction model request timed out. The saved stage can be resumed with a faster model or a lower output token limit.", e); }
+            var completedAt = DateTime.UtcNow;
+            timing.ResultJson = Json.Write(new ImportRequestTiming(mode, attempt > 0, startedAt, completedAt, (completedAt - startedAt).TotalSeconds));
             job.InputTokens = (job.InputTokens ?? 0) + (completion.InputTokens ?? 0);
             job.OutputTokens = (job.OutputTokens ?? 0) + (completion.OutputTokens ?? 0);
             try
