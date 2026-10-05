@@ -30,6 +30,8 @@ import StoryEngine from "./StoryEngine";
 import CampaignSettings from "./CampaignSettings";
 import ModelPicker from "./ModelPicker";
 import ImportReview from "./ImportReview";
+import ImportSource from "./ImportSource";
+import { UnsavedProvider, useUnsaved } from "./UnsavedChanges";
 import DeleteStoryModal from "./DeleteStoryModal";
 import { TranscriptHistory } from "./TranscriptViewer";
 import type {
@@ -58,7 +60,14 @@ type Decision = {
 };
 type ReviewedThread = Thread & { accept: boolean };
 
-export default function App() {
+export default function App() { return <UnsavedProvider><WorkspaceApp /></UnsavedProvider>; }
+
+function WorkspaceApp() {
+  const unsaved = useUnsaved();
+  const [importEntry, setImportEntry] = useState(false);
+  const [freshImport, setFreshImport] = useState(false);
+  const [legacyPage, setLegacyPage] = useState(0);
+  const [legacySaved, setLegacySaved] = useState("");
   const [page, setPage] = useState<Page>("library");
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -85,12 +94,9 @@ export default function App() {
   const [forkName, setForkName] = useState("An alternate path");
   const [forkCheckpoint, setForkCheckpoint] = useState("");
   const [forkAction, setForkAction] = useState("");
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importInputLimit, setImportInputLimit] = useState(24000);
   const [importOutputLimit, setImportOutputLimit] = useState(3000);
   const [importCallLimit, setImportCallLimit] = useState(100);
-  const [importProfile, setImportProfile] = useState("");
-  const [importModel, setImportModel] = useState("");
   const [selectedExportFile, setSelectedExportFile] = useState<File | null>(
     null,
   );
@@ -159,6 +165,7 @@ export default function App() {
 
   const openBranch = (id: string) =>
     run(async () => {
+      if (!await unsaved.confirm()) return;
       await loadWorkspace(id);
       setBranchId(id);
       setReview(null);
@@ -166,28 +173,31 @@ export default function App() {
       setAuthorView(false);
       setPage("story");
     });
-  const navigate = (next: Page) => {
+  const navigate = (next: Page) => void (async () => {
+    if (!await unsaved.confirm()) return;
     if (busy && next !== "story" && next !== "engine") return;
     setPage(next);
     setError("");
     setNotice("");
     if (next === "providers")
       void run(async () => setProfiles(await api<Profiles>("/providers")));
-    if (next === "library") void run(loadLibrary);
-  };
+    if (next === "library") { window.history.replaceState(null, "", window.location.pathname); void run(loadLibrary); }
+  })();
   const create = () =>
     run(async () => {
+      if (!await unsaved.confirm()) return;
       const branch = await post<Branch>("/campaigns", { name, synthetic });
       await loadWorkspace(branch.id);
       setBranchId(branch.id);
-      setPage("story");
+      setPage(importEntry ? "imports" : "story");
+      setFreshImport(importEntry);
       setNewCampaign(false);
       setName("");
       await loadLibrary();
     });
   const importCampaignExport = () =>
     run(async () => {
-      if (!selectedExportFile) return;
+      if (!selectedExportFile || !await unsaved.confirm()) return;
       const portable = JSON.parse(await selectedExportFile.text());
       const branch = await post<Branch>("/campaigns/import", {
         export: portable,
@@ -295,33 +305,36 @@ export default function App() {
   });
   const inspect = (id: string) =>
     run(async () => {
-      const data = await api<Review>(`/imports/${id}`);
+      const data = await api<Review>(`/imports/${id}?includeCandidates=false`);
+      if (!["agent-v2", "agent-v3"].includes(data.job.method)) {
+        data.candidates = [];
+        let index = 0, total = 1;
+        while (data.candidates.length < total) { const result = await api<{ total: number; items: Review["candidates"] }>(`/imports/${id}/candidates?page=${index++}`); data.candidates.push(...result.items); total = result.total; if (!result.items.length) break; }
+      }
+      if (data.job.branchId !== branchId) { await loadWorkspace(data.job.branchId); setBranchId(data.job.branchId); }
+      setLegacyPage(0);
+      window.history.replaceState(null, "", `?branch=${data.job.branchId}&import=${id}`);
       data.candidates.sort(
         (a, b) => (a.evidence[0]?.ordinal ?? 0) - (b.evidence[0]?.ordinal ?? 0),
       );
       setReview(data);
-      setDecisions(
-        data.candidates.map((c) => ({
-          factId: c.fact.id,
-          accept: c.fact.reviewStatus === "accepted",
-          text: c.fact.text,
-          visibility: c.fact.visibility,
-          kind: c.fact.kind,
-          confidence: c.fact.confidence,
-          knownBy: JSON.parse(c.fact.knownByJson || "[]"),
-        })),
-      );
-      setResumeState(
-        data.job.proposedStateJson
-          ? JSON.stringify(JSON.parse(data.job.proposedStateJson), null, 2)
-          : "",
-      );
-      setThreadDecisions(
-        JSON.parse(data.job.proposedThreadsJson || "[]").map(
-          (thread: Thread) => ({ ...thread, accept: true }),
-        ),
-      );
+      const original = { decisions: data.candidates.map(c => ({ factId: c.fact.id, accept: c.fact.reviewStatus === "accepted", text: c.fact.text, visibility: c.fact.visibility, kind: c.fact.kind, confidence: c.fact.confidence, knownBy: JSON.parse(c.fact.knownByJson || "[]") })),
+        resumeState: data.job.proposedStateJson ? JSON.stringify(JSON.parse(data.job.proposedStateJson), null, 2) : "",
+        threads: JSON.parse(data.job.proposedThreadsJson || "[]").map((thread: Thread) => ({ ...thread, accept: true })) };
+      const local = sessionStorage.getItem(`legacy-review:${id}`);
+      const values = local ? JSON.parse(local) as typeof original : original;
+      setDecisions(values.decisions); setResumeState(values.resumeState); setThreadDecisions(values.threads); setLegacySaved(JSON.stringify(values));
+
     });
+  useEffect(() => { const params = new URLSearchParams(window.location.search); const savedBranch = params.get("branch"), savedImport = params.get("import"); if (!savedBranch) return; void run(async () => { await loadWorkspace(savedBranch); setBranchId(savedBranch); if (savedImport) { await inspect(savedImport); setPage("imports"); } else setPage("story"); }); }, []);
+  useEffect(() => { window.scrollTo({ top: 0 }); }, [page, review?.job.id]);
+  useEffect(() => { window.scrollTo({ top: 0 }); }, [legacyPage]);
+  useEffect(() => {
+    if (!review || ["agent-v2", "agent-v3"].includes(review.job.method)) return;
+    const values = { decisions, resumeState, threads: threadDecisions }; const serialized = JSON.stringify(values);
+    unsaved.register("legacy-review", serialized !== legacySaved ? { label: "Legacy review", save: async () => { sessionStorage.setItem(`legacy-review:${review.job.id}`, serialized); setLegacySaved(serialized); setNotice("Review edits saved in this browser. Approval still applies them to the campaign."); }, discard: () => { const saved = JSON.parse(legacySaved) as typeof values; setDecisions(saved.decisions); setResumeState(saved.resumeState); setThreadDecisions(saved.threads); } } : null);
+    return () => unsaved.register("legacy-review", null);
+  }, [review?.job.id, decisions, resumeState, threadDecisions, legacySaved, unsaved.register]);
   const approve = () =>
     run(async () => {
       if (!review || !workspace) return;
@@ -337,6 +350,7 @@ export default function App() {
         decisions,
         threads: threadDecisions,
       });
+      sessionStorage.removeItem(`legacy-review:${review.job.id}`);
       await loadWorkspace(workspace.branch.id);
       setReview(null);
       setPage("story");
@@ -479,7 +493,7 @@ export default function App() {
                   Return to a familiar world. Or give a new one a beginning.
                 </p>
               </div>
-              <button className="primary" onClick={() => setNewCampaign(true)}>
+              <button className="primary" onClick={() => { setImportEntry(false); setNewCampaign(true); }}>
                 <Plus size={17} /> New campaign
               </button>
               <label className="light-button export-import">
@@ -516,6 +530,7 @@ export default function App() {
                   className="light-button"
                   onClick={() => {
                     setSynthetic(false);
+                    setImportEntry(true);
                     setNewCampaign(true);
                   }}
                 >
@@ -1049,113 +1064,9 @@ export default function App() {
             </p>
             {!review ? (
               <>
-                <form
-                  className="upload-panel"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void run(async () => {
-                      if (!selectedFile) return;
-                      const body = new FormData();
-                      body.append("file", selectedFile);
-                      body.append(
-                        "inputCharacterLimit",
-                        String(importInputLimit),
-                      );
-                      body.append(
-                        "outputTokenLimit",
-                        String(importOutputLimit),
-                      );
-                      body.append("maxCalls", String(importCallLimit));
-                      body.append("prepareOnly", "true");
-                      if (importProfile) { body.append("provider", importProfile); body.append("model", importModel); }
-                      const job = await api<Job>(
-                        `/branches/${branchId}/imports`,
-                        { method: "POST", body },
-                      );
-                      setJobs(
-                        await api<Job[]>(`/branches/${branchId}/imports`),
-                      );
-                      setNotice(
-                        "Source preserved and grouped. Review its structure before starting reconstruction.",
-                      );
-                      await inspect(job.id);
-                    });
-                  }}
-                >
-                  <Upload size={30} strokeWidth={1.2} />
-                  <h2>A whole history, a fresh beginning.</h2>
-                  <p>
-                    UTF-8 text, Markdown, HTML, DOCX, or documented JSON · Up to
-                    32 MiB per file · 16 MiB extracted text
-                  </p>
-                  <input
-                    aria-label="Transcript file"
-                    type="file"
-                    accept=".txt,.md,.markdown,.html,.htm,.docx,.json"
-                    onChange={(e) =>
-                      setSelectedFile(e.target.files?.[0] ?? null)
-                    }
-                  />
-                  <label>Reconstruction profile for this import
-                    <select value={importProfile} onChange={e => { setImportProfile(e.target.value); setImportModel(profiles?.profiles.find(p => p.id === e.target.value)?.model || ""); }}>
-                      <option value="">Use reconstruction settings</option>
-                      {profiles?.profiles.filter(p => p.enabled && p.id !== "fixture").map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
-                  </label>
-                  {importProfile && <ModelPicker profile={profiles?.profiles.find(p => p.id === importProfile)} value={importModel} onChange={setImportModel} disabled={busy} label="Reconstruction model" />}
-                  <button className="primary" disabled={busy || !selectedFile}>
-                    Preserve & preview
-                  </button>
-                  <details>
-                    <summary>Processing budget</summary>
-                    <label>
-                      Input characters per call
-                      <input
-                        type="number"
-                        min={12000}
-                        max={120000}
-                        value={importInputLimit}
-                        onChange={(e) =>
-                          setImportInputLimit(Number(e.target.value))
-                        }
-                      />
-                    </label>
-                    <label>
-                      Output tokens per call
-                      <input
-                        type="number"
-                        min={1000}
-                        max={12000}
-                        value={importOutputLimit}
-                        onChange={(e) =>
-                          setImportOutputLimit(Number(e.target.value))
-                        }
-                      />
-                    </label>
-                    <label>
-                      Maximum model calls
-                      <input
-                        type="number"
-                        min={1}
-                        max={1000}
-                        value={importCallLimit}
-                        onChange={(e) =>
-                          setImportCallLimit(Number(e.target.value))
-                        }
-                      />
-                    </label>
-                    <small>
-                      Calls include analysis, reconciliation, final-scene
-                      reconstruction, review, and repairs. Processing pauses at
-                      the budget. Provider pricing is not estimated.
-                    </small>
-                  </details>
-                  <small>
-                    The selected reconstruction provider receives transcript
-                    grouped text after you start reconstruction. Imported facts remain reviewable before becoming
-                    canon.
-                  </small>
-                </form>
+                <ImportSource key={branchId} branchId={branchId!} checkpointId={workspace.checkpoint.id} campaignName={workspace.campaign.name} timelineName={workspace.branch.name} freshCampaign={freshImport} onPrepared={async job => {
+                  await loadWorkspace(job.branchId); setBranchId(job.branchId); setFreshImport(false); await inspect(job.id);
+                }} />
                 <div className="panel">
                   <h2>Import history</h2>
                   {!jobs.length && (
@@ -1165,9 +1076,9 @@ export default function App() {
                     <div className="job-row" key={j.id}>
                       <FileText size={20} />
                       <div>
-                        <strong>Import {j.id.slice(0, 8)}</strong>
+                        <strong>{j.fileName || `Import ${j.id.slice(0, 8)}`}</strong>
                         <small>
-                          {j.status} · {j.stage || "legacy"} · {j.processed}/
+                          {({ prepared: "Ready to reconstruct", review: "Needs your review", processing: "Reconstructing", queued: "Waiting", approved: "Approved", paused: "Paused", cancelled: "Paused", failed: "Needs a corrected source" } as Record<string, string>)[j.status] || j.status} · {j.timelineName || workspace.branch.name} · {j.createdAt ? new Date(j.createdAt).toLocaleDateString() : ""} · {j.processed}/
                           {j.total || "?"} {j.method === "agent-v3" ? "blocks" : "passages"}
                         </small>
                         {j.error && (
@@ -1178,7 +1089,7 @@ export default function App() {
                         disabled={busy}
                         onClick={() => void inspect(j.id)}
                       >
-                        Inspect
+                        {j.status === "review" ? "Review" : j.status === "approved" ? "View import" : "Open"}
                       </button>
                       {["queued", "processing", "review"].includes(
                         j.status,
@@ -1223,17 +1134,19 @@ export default function App() {
               </>
             ) : ["agent-v2", "agent-v3"].includes(review.job.method) ? (
               <>
-                <button className="text-button" onClick={() => setReview(null)}>
+                <button className="text-button" onClick={() => void (async () => { if (await unsaved.confirm()) { setReview(null); window.history.replaceState(null, "", `?branch=${branchId}`); } })()}>
                   <ArrowLeft size={16} /> All imports
                 </button>
                 <ImportReview
                   key={review.job.id}
                   id={review.job.id}
                   expectedCheckpointId={workspace.checkpoint.id}
-                  onReanalyzed={inspect}
+                  onNewSource={() => setReview(null)}
+                  onReanalyzed={async id => { await inspect(id); }}
                   onApproved={async () => {
-                    await loadWorkspace(workspace.branch.id);
+                    await loadWorkspace(branchId!);
                     setReview(null);
+                    window.history.replaceState(null, "", `?branch=${branchId}`);
                     setPage("story");
                     setNotice("Reviewed reconstruction approved.");
                   }}
@@ -1241,7 +1154,7 @@ export default function App() {
               </>
             ) : (
               <>
-                <button className="text-button" onClick={() => setReview(null)}>
+                <button className="text-button" onClick={() => void (async () => { if (await unsaved.confirm()) { setReview(null); window.history.replaceState(null, "", `?branch=${branchId}`); } })()}>
                   <ArrowLeft size={16} /> All imports
                 </button>
                 <div className="panel">
@@ -1255,12 +1168,14 @@ export default function App() {
                     disabled={busy}
                     onClick={() =>
                       void run(async () => {
+                        if (!await unsaved.confirm()) return;
                         const job = await post<Job>(
                           `/imports/${review.job.id}/reanalyze`,
                           {
                             inputCharacterLimit: importInputLimit,
                             outputTokenLimit: importOutputLimit,
                             maxCalls: importCallLimit,
+                            prepareOnly: true,
                           },
                         );
                         await inspect(job.id);
@@ -1270,6 +1185,7 @@ export default function App() {
                     Reanalyze preserved source
                   </button>
                   <h2>{review.source.fileName}</h2>
+                  {review.job.status === "review" && <button disabled={busy} onClick={() => { const serialized = JSON.stringify({ decisions, resumeState, threads: threadDecisions }); sessionStorage.setItem(`legacy-review:${review.job.id}`, serialized); setLegacySaved(serialized); setNotice("Review edits saved in this browser until approval."); }}>Save review edits in this browser</button>}
                   <p className="hash">SHA-256 · {review.source.sha256}</p>
                   <p>
                     <strong>
@@ -1297,8 +1213,9 @@ export default function App() {
                     uncertainty, and knowledge scope before approval.
                   </p>
                 </div>
-                {review.candidates.slice(0, 20).map((c, index) => (
-                  <div className="panel candidate" key={c.fact.id}>
+                {review.candidates.slice(legacyPage * 20, (legacyPage + 1) * 20).map((c, pageIndex) => (
+                  <LegacyCandidateWrapper key={c.fact.id}>
+                  {(() => { const index = legacyPage * 20 + pageIndex; return <div className="panel candidate">
                     <label className="check-label">
                       <input
                         type="checkbox"
@@ -1425,8 +1342,10 @@ export default function App() {
                         </blockquote>
                       ))}
                     </details>
-                  </div>
+                  </div>; })()}
+                  </LegacyCandidateWrapper>
                 ))}
+                <div className="button-row"><button disabled={busy || legacyPage === 0} onClick={() => void (async () => { if (await unsaved.confirm()) setLegacyPage(x => x - 1); })()}>Previous candidates</button><span>Page {legacyPage + 1} · {review.candidates.length} candidates</span><button disabled={busy || (legacyPage + 1) * 20 >= review.candidates.length} onClick={() => void (async () => { if (await unsaved.confirm()) setLegacyPage(x => x + 1); })()}>Next candidates</button></div>
                 {review.job.status === "review" && (
                   <div className="panel">
                     <h2>Proposed story threads</h2>
@@ -1483,11 +1402,12 @@ export default function App() {
                       </label>
                       <button
                         className="primary"
-                        disabled={busy}
+                        disabled={busy || unsaved.dirty}
                         onClick={() => void approve()}
                       >
                         <Check size={16} /> Approve checkpoint & reviewed facts
                       </button>
+                      {unsaved.dirty && <p>Save or discard your review edits before approval.</p>}
                     </div>
                   )}
               </>
@@ -1776,3 +1696,5 @@ export default function App() {
     </div>
   );
 }
+
+function LegacyCandidateWrapper({ children }: { children: import("react").ReactNode }) { return <>{children}</>; }

@@ -1184,3 +1184,27 @@ input[type="checkbox"] {
 .model-discovery-status { display: flex; align-items: center; gap: .7rem; justify-content: space-between; margin: -.25rem 0 .65rem; }
 .model-discovery-status small { flex: 1; }
 .model-discovery-status button { font-size: .78rem; flex-shrink: 0; }
+.import-steps { display: grid; grid-template-columns: repeat(4, 1fr); list-style: none; padding: 0; margin: 24px 0; gap: 8px; }
+.import-steps li { display: flex; align-items: center; gap: 8px; padding: 12px 8px; border-bottom: 3px solid #dce2d5; color: #65705f; }
+.import-steps li.active { color: #263c22; border-color: #526848; font-weight: 600; }
+.import-steps li.complete { border-color: #8b9c7b; }
+.import-steps li span { border-radius: 50%; background: #e6ecdf; width: 26px; height: 26px; display: grid; place-items: center; flex-shrink: 0; }
+.import-tabs, .button-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 16px 0; }
+.import-tabs button.active { background: #526848; color: white; }
+.import-source label { text-align: left; width: 100%; max-width: 620px; margin: 16px auto; }
+.import-source input, .import-source select { width: 100%; box-sizing: border-box; }
+.import-source small { display: block; max-width: 620px; margin: 12px auto; line-height: 1.6; }
+.import-source details { text-align: left; max-width: 620px; margin: 16px auto; }
+.import-source pre, .import-review pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; }
+.import-summary h2 { overflow-wrap: anywhere; }
+.import-review .panel { margin: 20px 0; }
+.import-review button { margin: 4px 8px 4px 0; }
+.import-review p { line-height: 1.65; }
+.import-review summary { cursor: pointer; }
+.import-review .check-label { display: flex; gap: 10px; align-items: center; }
+.state-rows { border: 1px solid #dce2d5; border-radius: 10px; margin: 18px 0; padding: 16px; }
+.state-row { display: flex; align-items: end; gap: 12px; }
+.state-row label { flex: 1; }
+.unsaved-dialog { max-width: 600px; }
+.import-readiness { border-left: 4px solid #526848; }
+@media (max-width: 650px) { .import-steps li { flex-direction: column; font-size: .8rem; } .import-steps { gap: 4px; } .import-source { padding: 20px; } .state-row { flex-wrap: wrap; } }

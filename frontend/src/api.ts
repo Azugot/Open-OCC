@@ -1,3 +1,4 @@
+export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 export async function api<T>(
   path: string,
   options: RequestInit = {},
@@ -12,10 +13,7 @@ export async function api<T>(
   const response = await fetch(`/api${path}`, { ...options, headers });
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
-    throw new Error(
-      payload?.error ||
-        `Request failed (${response.status}). Check that the backend is running.`,
-    );
+    throw new ApiError(payload?.error || `Request failed (${response.status}). Check that the backend is running.`, response.status);
   }
   return response.status === 204 ? (undefined as T) : response.json();
 }
@@ -193,6 +191,10 @@ export type Workspace = {
   summary?: { text: string; throughSequence: number } | null;
 };
 export type Job = {
+  branchId: string;
+  createdAt?: string;
+  fileName?: string;
+  timelineName?: string;
   id: string;
   sourceId: string;
   status: string;
