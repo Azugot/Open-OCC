@@ -28,6 +28,7 @@ export async function streamTurn(
   value: unknown,
   onDelta: (text: string) => void,
   signal: AbortSignal,
+  onEvent?: (event: TurnStreamEvent) => void,
 ) {
   const headers = new Headers({
     "Content-Type": "application/json",
@@ -57,12 +58,15 @@ export async function streamTurn(
     for (const line of lines) {
       if (!line.trim()) continue;
       const event = JSON.parse(line);
+      onEvent?.(event);
       if (event.type === "delta") onDelta(event.text);
       if (event.type === "error") throw new Error(event.error);
     }
     if (done) break;
   }
 }
+export type GenerationProgressData = { runId: string; status: string; mode: string; phase: string; startedAt: string; phaseStartedAt: string; updatedAt: string; asOf: string };
+export type TurnStreamEvent = { type: string; runId?: string; progress?: GenerationProgressData; checkpointId?: string };
 export async function downloadSource(id: string, name: string) {
   const headers = new Headers();
   const token = sessionStorage.getItem("occ-token");

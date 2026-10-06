@@ -73,6 +73,7 @@ public static class EngineApi
             var run = await db.GenerationRuns.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException();
             if (run.Status is not ("running" or "paused")) throw new InvalidOperationException("This draft cannot be cancelled.");
             run.Status = "cancelled"; run.Error = "Cancelled. No partial turn was committed.";
+            GenerationProgress.Stop(run);
             await db.SaveChangesAsync(ct); StoryEngine.Cancel(run.Id); return Results.NoContent();
         });
     }

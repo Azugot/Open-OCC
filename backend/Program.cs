@@ -58,7 +58,7 @@ if (!app.Environment.IsEnvironment("Testing"))
     // Streaming runs capture continuity context; autonomous runs retain resumable
     // draft steps instead. Only the former lack a safe execution cursor on restart.
     foreach (var run in await db.GenerationRuns.Where(x => x.Status == "running" && x.ContextJson != "{}").ToListAsync())
-    { run.Status = "interrupted"; run.Error = "Application restarted before the turn completed. No partial turn was committed."; }
+    { run.Status = "interrupted"; GenerationProgress.Stop(run); run.Error = "Application restarted before the turn completed. No partial turn was committed."; }
     await db.SaveChangesAsync();
     await StoryEngine.Recover(db);
 }
@@ -149,6 +149,7 @@ app.MapPost("/api/branches/{id:guid}/turns", async (Guid id, TurnRequest request
     var run = new GenerationRun { BranchId = id, Action = request.Action.Trim(), ExpectedCheckpointId = checkpoint.Id,
         Provider = world.Settings.DirectorProfile, Model = string.IsNullOrWhiteSpace(world.Settings.DirectorModel) ? profile?.Model ?? "fixture-v1" : world.Settings.DirectorModel.Trim() };
     branch.Revision++;
+    GenerationProgress.Set(run, "autonomous", "preparing");
     db.GenerationRuns.Add(run); await db.SaveChangesAsync(ct);
     await StoryEngine.Execute(db, run, config, ct);
     return Results.Ok(new { run.Id });
@@ -171,6 +172,7 @@ app.MapPost("/api/branches/{id:guid}/turns/stream", async (Guid id, TurnRequest 
     var checkpoint = await db.Checkpoints.SingleAsync(x => x.Id == branch.HeadCheckpointId, ct);
     var storyContext = await continuity.Assemble(db, id, Json.Read<StoryState>(checkpoint.StateJson), request.Action.Trim(), ct);
     var run = new GenerationRun { BranchId = id, Action = request.Action.Trim(), ExpectedCheckpointId = checkpoint.Id, Provider = profile.Id, Model = profile.Model, ContextJson = Json.Write(storyContext) };
+    GenerationProgress.Set(run, "narrator", "preparing");
     branch.Revision++;
     db.GenerationRuns.Add(run);
     await db.SaveChangesAsync(ct);
@@ -179,6 +181,14 @@ app.MapPost("/api/branches/{id:guid}/turns/stream", async (Guid id, TurnRequest 
         http.Response.ContentType = "application/x-ndjson";
         await http.Response.WriteAsync(Json.Write(new { type = "start", runId = run.Id }) + "\n", ct);
         await http.Response.Body.FlushAsync(ct);
+        async Task Report(string phase)
+        {
+            GenerationProgress.Set(run, "narrator", phase);
+            await db.SaveChangesAsync(ct);
+            await http.Response.WriteAsync(Json.Write(new { type = "progress", progress = GenerationProgress.View(run) }) + "\n", ct);
+            await http.Response.Body.FlushAsync(ct);
+        }
+        await Report("narrating");
         var narrative = new StringBuilder();
         await foreach (var evt in provider.Stream(ContinuityService.NarrationPrompt(storyContext, run.Action), ct))
         {
@@ -192,6 +202,7 @@ app.MapPost("/api/branches/{id:guid}/turns/stream", async (Guid id, TurnRequest 
             if (evt.Type == "done") { run.InputTokens = evt.InputTokens; run.OutputTokens = evt.OutputTokens; }
         }
         var validatedNarrative = ContinuityService.ValidateNarrative(narrative.ToString());
+        await Report("checking-continuity");
         var memory = await routing.Resolve(db, "memory", ct);
         StateTransition transition;
         var continuityUpdated = true;
@@ -212,6 +223,7 @@ app.MapPost("/api/branches/{id:guid}/turns/stream", async (Guid id, TurnRequest 
         await db.Entry(branch).ReloadAsync(ct);
         await db.Entry(run).ReloadAsync(ct);
         if (run.Status != "running") throw new OperationCanceledException("Turn was cancelled.");
+        await Report("saving");
         await CampaignService.CommitTurn(db, run, validatedNarrative, nextState, transition, ct);
         await http.Response.WriteAsync(Json.Write(new { type = "done", runId = run.Id, checkpointId = branch.HeadCheckpointId, continuityUpdated }) + "\n", ct);
         await http.Response.Body.FlushAsync(ct);
@@ -225,6 +237,7 @@ app.MapPost("/api/branches/{id:guid}/turns/stream", async (Guid id, TurnRequest 
         {
             if (saved.Status != "cancelled") saved.Status = e is OperationCanceledException ? "cancelled" : "failed";
             saved.Error = "Turn did not commit. Reload the branch and retry.";
+            GenerationProgress.Stop(saved);
             await db.SaveChangesAsync(CancellationToken.None);
         }
         else return; // A disconnected client must not reclassify a committed turn.
@@ -338,6 +351,7 @@ ImportReview.Map(app);
 TranscriptApi.Map(app);
 EngineApi.Map(app);
 CharacterService.Map(app);
+GenerationProgress.Map(app);
 app.Run();
 
 public record ProfileUpdate(string Model, bool Enabled, string? Adapter = null);

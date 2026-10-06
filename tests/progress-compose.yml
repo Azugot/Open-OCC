@@ -1,0 +1,22 @@
+# Synthetic story responses only; combine with docker-compose.yml and import-compose.yml.
+services:
+  backend:
+    environment:
+      CHARACTER_ADAPTER: openai-compatible
+      DIRECTOR_ADAPTER: openai-compatible
+      CHARACTER_MODEL: recorded
+      DIRECTOR_MODEL: recorded
+      CHARACTER_API_KEY: synthetic-test
+      DIRECTOR_API_KEY: synthetic-test
+      CHARACTER_BASE_URL: http://progress-model:23307/v1
+      DIRECTOR_BASE_URL: http://progress-model:23307/v1
+      NARRATION_PROVIDER: director
+      MEMORY_PROVIDER: director
+  progress-model:
+    image: node:22-alpine
+    working_dir: /fixtures
+    command: ["node", "progress-model.mjs"]
+    ports:
+      - "127.0.0.1:23307:23307"
+    volumes:
+      - ./tests/progress-model.mjs:/fixtures/progress-model.mjs:ro

@@ -38,6 +38,7 @@ public class StoryDb(DbContextOptions<StoryDb> options) : DbContext(options)
         b.Entity<Branch>().Property(x => x.Revision).IsConcurrencyToken();
         b.Entity<ImportJob>().Property(x => x.Status).IsConcurrencyToken();
         b.Entity<GenerationRun>().Property(x => x.Status).IsConcurrencyToken();
+        b.Entity<GenerationRun>().Property(x => x.ProgressJson).HasDefaultValue("{}");
         b.Entity<ImportJob>().Property(x => x.ProposalRevision).IsConcurrencyToken();
         b.Entity<ImportJob>().Property(x => x.LeaseOwner).IsConcurrencyToken();
         b.Entity<ImportSection>().HasOne<ImportJob>().WithMany().HasForeignKey(x => x.JobId).OnDelete(DeleteBehavior.Restrict);

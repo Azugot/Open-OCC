@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Job } from "./api";
+import ActivityMessage from "./ActivityMessage";
+import "./progress.css";
 
 export type ReconstructionProgress = {
   percent: number; stage: string; completed: number; total: number | null;
@@ -21,7 +23,11 @@ function duration(seconds: number) {
 }
 export default function ImportProgress({ job, progress, grouped }: { job: Job; progress?: ReconstructionProgress; grouped: boolean }) {
   const [now, setNow] = useState(Date.now());
+  const [phaseClock, setPhaseClock] = useState(() => new Date().toISOString());
   const working = ["queued", "processing", "preparing"].includes(job.status);
+  const waitingToResume = job.status === "queued" && job.processed > 0;
+  const phraseGroup = job.status === "queued" ? waitingToResume ? "resuming" : "import-queued" : progress?.activity === "repairing-response" ? "import-repair" : `import-${job.stage === "normalize" ? "preparing" : job.stage || "preparing"}`;
+  useEffect(() => setPhaseClock(new Date().toISOString()), [phraseGroup, job.id]);
   useEffect(() => { if (!working) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [working]);
   const index = stages.findIndex(x => x.key === job.stage);
   const current = stages[index];
@@ -34,10 +40,11 @@ export default function ImportProgress({ job, progress, grouped }: { job: Job; p
   const unit = job.stage === "extract" ? `source ${grouped ? "blocks" : "passages"}` : "review batches";
   const stopped = ["paused", "cancelled", "failed"].includes(job.status);
   return <div className="reconstruction-progress">
-    <div className="reconstruction-progress-heading"><strong>{job.status === "queued" ? "Waiting to start" : stopped ? `Paused: ${current?.name || "Prepare source"}` : current?.name || "Preparing source"}</strong><span>{progress?.percent ?? 0}% · estimated progress</span></div>
+    <div className="reconstruction-progress-heading"><strong role="status" aria-live="polite" aria-atomic="true">{job.status === "queued" ? waitingToResume ? "Waiting to resume saved work" : "Waiting to start" : stopped ? `${job.status === "paused" ? "Paused" : job.status === "cancelled" ? "Cancelled" : "Failed"}: ${current?.name || "Prepare source"}` : current?.name || "Preparing source"}</strong><span>{progress?.percent ?? 0}% · estimated progress</span></div>
     <progress className={working ? "is-working" : ""} max={100} value={progress?.percent ?? 0} aria-label="Overall reconstruction progress" />
     <ol className="reconstruction-stages" aria-label="Reconstruction stages">{stages.map((stage, i) => <li key={stage.key} className={i < index ? "complete" : i === index ? "active" : ""} aria-current={i === index ? "step" : undefined}><span aria-hidden="true">{i < index ? "✓" : i + 1}</span>{stage.name}</li>)}</ol>
-    <p role="status">{job.status === "queued" ? "Your import is saved and waiting for the reconstruction worker." : stopped ? "Processing has stopped. Resume below to continue from this saved stage." : current?.doing || "Turning the preserved file into readable source blocks."}</p>
+    <p role="status">{job.status === "queued" ? "Waiting for the reconstruction worker." : stopped ? "Processing has stopped. Resume below to continue from this saved stage." : current?.doing || "Turning the preserved file into readable source blocks."}</p>
+    {working && <ActivityMessage group={phraseGroup} active={working} startedAt={job.createdAt || phaseClock} phaseStartedAt={phaseClock} seed={job.id} />}
     {progress?.total != null && ["extract", "reconcile", "audit"].includes(job.stage || "") && <p>{progress.completed}/{progress.total} {unit} completed.</p>}
     {job.processed >= job.total && job.total > 0 && <p className="progress-detail">All {job.total} source {grouped ? "blocks" : "passages"} read. Reading is the first stage; reconstruction must finish before review.</p>}
     {working && progress?.activity === "generating" && <p className="progress-detail"><span className="progress-pulse" aria-hidden="true" />Model is generating a response{elapsed != null ? ` · ${duration(elapsed)} elapsed on this request` : ""}.</p>}

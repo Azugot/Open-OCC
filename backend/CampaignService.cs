@@ -147,6 +147,7 @@ public static class CampaignService
         else { summary.ThroughSequence = checkpoint.Sequence; summary.Text = summaryText; summary.UpdatedAt = DateTime.UtcNow; }
         run.StateProposalJson = Json.Write(transition);
         run.Status = "completed";
+        GenerationProgress.Stop(run);
         await db.SaveChangesAsync(ct);
     }
 

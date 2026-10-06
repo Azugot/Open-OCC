@@ -17,6 +17,8 @@ import { TranscriptDrawer } from "./TranscriptViewer";
 import type { SourceEvidence } from "./TranscriptViewer";
 import Characters from "./Characters";
 import { useUnsaved } from "./UnsavedChanges";
+import GenerationProgress from "./GenerationProgress";
+import type { GenerationProgressData } from "./api";
 
 type Entity = {
   id: string;
@@ -118,11 +120,17 @@ export default function StoryEngine({
   busy,
   onRefresh,
   initialTab = "live",
+  generationProgress,
+  progressConnectionError,
+  onRetryRun,
 }: {
   workspace: Workspace;
   busy: boolean;
   onRefresh: () => Promise<void>;
   initialTab?: "live" | "characters";
+  generationProgress: GenerationProgressData | null;
+  progressConnectionError: string;
+  onRetryRun: (id: string) => Promise<void>;
 }) {
   const [data, setData] = useState<Engine | null>(null);
   const [checkpoint, setCheckpoint] = useState("");
@@ -358,6 +366,7 @@ export default function StoryEngine({
         ))}
       </nav>
       {!data && !error && <p role="status">Loading world…</p>}
+      {!historical && <GenerationProgress progress={generationProgress} connectionError={progressConnectionError} />}
       {data && tab === "characters" && <Characters key={branch} branchId={branch} checkpointId={data.checkpointId} author={spoilers} busy={busy || pending || saving || data.checkpointId !== (checkpoint || workspace.checkpoint.id)} onRefresh={onRefresh} initialId={characterId} />}
       {data && tab === "live" && (
         <>
@@ -368,7 +377,7 @@ export default function StoryEngine({
                   <div>
                     <strong>
                       {r.status === "running"
-                        ? "Characters are responding"
+                        ? "Story generation in progress"
                         : r.status === "paused"
                           ? "Generation paused"
                           : `Generation ${r.status}`}
@@ -387,7 +396,7 @@ export default function StoryEngine({
                       <button
                         disabled={saving || busy}
                         onClick={() =>
-                          void perform(() => post(`/runs/${r.id}/retry`))
+                          void onRetryRun(r.id)
                         }
                       >
                         Retry

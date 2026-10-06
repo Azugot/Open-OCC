@@ -349,6 +349,12 @@ namespace Story.Api.Migrations
                     b.Property<int?>("OutputTokens")
                         .HasColumnType("integer");
 
+                    b.Property<string>("ProgressJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("{}");
+
                     b.Property<string>("Provider")
                         .IsRequired()
                         .HasColumnType("text");

@@ -92,6 +92,12 @@ node tests/access-and-cancellation.mjs http://localhost:8081
 
 This test creates a synthetic campaign and aborts a fixture turn. It requires a stack with token authentication enabled.
 
+## Processing indicator verification (October 6, 2026)
+
+The processing implementation passes all 220 .NET tests, the production frontend build, `activity-messages.mjs` (128 messages, rotation and mode filtering), and `activity-components.mjs` (server-rendered state/accessibility contracts). EF reports no pending model changes. No real model calls were made.
+
+The isolated PostgreSQL/HTTP smoke and complete browser walkthrough remain pending: Docker Desktop was manually paused when the verification stack was started. `docs/processing.md` includes the recorded fixture stack and commands. Server-rendered checks do not establish browser timers, responsive rendering, timeline navigation, or reload behavior.
+
 ## Local test environment
 
 The interactive verification app uses Compose project `open-occ-verify` and loopback port 8080. It contains only synthetic test campaigns. To stop it without removing data:

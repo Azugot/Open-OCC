@@ -24,6 +24,7 @@ public static class StoryEngine
         foreach (var run in await db.GenerationRuns.Where(x => x.Status == "running").ToListAsync(ct))
         {
             run.Status = "paused";
+            GenerationProgress.Stop(run);
             run.Error = "Application restarted. Retry to resume saved steps and rolls; no partial turn was committed.";
         }
         await db.SaveChangesAsync(ct);
@@ -126,7 +127,9 @@ public static class StoryEngine
             draft.Guidance ??= run.DraftJson == "{}" ? CampaignGuidance.From(campaign) : new CampaignGuidance();
             var w = draft.World;
             w.Settings.Validate();
+            var resuming = run.Status == "paused";
             run.Status = "running"; run.Error = null;
+            GenerationProgress.Set(run, "autonomous", resuming ? "resuming" : "preparing", restart: resuming);
             await Save();
             var character = characterOverride ?? await Provider(w.Settings.CharacterProfile, w.Settings.CharacterModel);
             var director = directorOverride ?? await Provider(w.Settings.DirectorProfile, w.Settings.DirectorModel);
@@ -231,6 +234,7 @@ public static class StoryEngine
             await db.Entry(branch).ReloadAsync(ct);
             await db.Entry(run).ReloadAsync(ct);
             if (run.Status != "running") throw new OperationCanceledException("Turn was cancelled.");
+            GenerationProgress.Set(run, "autonomous", "saving"); await Save();
             await CampaignService.CommitTurn(db, run, narration.Narrative, ct, draft.State, w);
 
             async Task<IAgentProvider> Provider(string id, string? model)
@@ -253,6 +257,8 @@ public static class StoryEngine
             {
                 var existing = draft.Steps.SingleOrDefault(x => x.Key == key);
                 if (existing is not null) return Json.Read<T>(existing.ResultJson);
+                var phase = task switch { "plan" => "director-planning", "character" => "cast-deciding", "assess" => "director-assessing", "resolve" => "director-resolving", "narrate" => "narrating", _ => "preparing" };
+                GenerationProgress.Set(run, "autonomous", phase); await Save();
                 var instructions = Instructions(task) + "\nRespect supplied character profiles, capability ranks and limitations. Capabilities are author-managed; never grant powers or advance proficiency ranks." + draft.Guidance.Prompt + (draft.ValidationFeedback.TryGetValue(key, out var feedback)
                     ? "\nPrevious response failed validation: " + feedback + " Regenerate this task using only supplied IDs and the required fields/types." : "");
                 try
@@ -295,6 +301,7 @@ public static class StoryEngine
                     : ex is InvalidOperationException && (ex.Message.StartsWith("Invalid ") || ex.Message.StartsWith("Unknown ") || ex.Message.StartsWith("Director selected") || ex.Message.StartsWith("Recipients must") || ex.Message.StartsWith("A private proposal") || ex.Message.StartsWith("A directed proposal") || ex.Message.StartsWith("A failed check"))
                         ? "Generation paused: " + ex.Message + " Validated steps and rolls are preserved."
                     : "Generation paused. Check provider settings and retry; validated steps and rolls are preserved.";
+                GenerationProgress.Stop(saved);
                 await db.SaveChangesAsync(CancellationToken.None);
             }
             // Cancellation may win between the pre-save check and EF's concurrency-token update.

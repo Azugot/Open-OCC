@@ -101,6 +101,7 @@ public class GenerationRun
     public int? OutputTokens { get; set; }
     public string? Error { get; set; }
     public string DraftJson { get; set; } = "{}";
+    public string ProgressJson { get; set; } = "{}";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 public class ImportedSource

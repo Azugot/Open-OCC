@@ -95,6 +95,7 @@ Unit/integration tests use SQLite in memory for fast relational checks. They do 
 - [Import formats and review](docs/imports.md)
 - [Provider setup and limits](docs/providers.md)
 - [Autonomous storyteller and APIs](docs/storyteller.md)
+- [Processing indicators and recorded verification](docs/processing.md)
 - [Backup and restore](docs/backup-restore.md)
 - [Architecture and next milestones](docs/architecture.md)
 - [Original implementation handoff](IMPLEMENTATION-HANDOFF.md)

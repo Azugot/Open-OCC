@@ -33,6 +33,7 @@ import ImportReview from "./ImportReview";
 import ImportSource from "./ImportSource";
 import { UnsavedProvider, useUnsaved } from "./UnsavedChanges";
 import DeleteStoryModal from "./DeleteStoryModal";
+import GenerationProgress, { useGenerationProgress } from "./GenerationProgress";
 import { TranscriptHistory } from "./TranscriptViewer";
 import type {
   Branch,
@@ -110,15 +111,21 @@ function WorkspaceApp() {
   const generation = useRef<AbortController | null>(null);
   const end = useRef<HTMLDivElement>(null);
   const activeRun = workspace?.runs.find(r => ["running", "paused"].includes(r.status));
+  const currentBranch = useRef(branchId); currentBranch.current = branchId;
+  const workspaceRequest = useRef(0);
   const loadLibrary = useCallback(
     async () => setCampaigns(await api<Campaign[]>("/campaigns")),
     [],
   );
   const loadWorkspace = useCallback(async (id: string) => {
+    const request = ++workspaceRequest.current;
     const data = await api<Workspace>(`/branches/${id}`);
+    if (request !== workspaceRequest.current) return;
     setWorkspace(data);
     setForkCheckpoint(data.checkpoint.id);
   }, []);
+  const processing = useGenerationProgress(workspace?.branch.id, workspace?.checkpoint.id, activeRun,
+    () => workspace ? loadWorkspace(workspace.branch.id) : Promise.resolve());
   const run = async (task: () => Promise<void>) => {
     setError("");
     setNotice("");
@@ -138,13 +145,8 @@ function WorkspaceApp() {
     if (page === "imports") void api<Profiles>("/providers").then(setProfiles).catch(e => setError(e.message));
   }, [page]);
   useEffect(() => {
-    if (page === "story") end.current?.scrollIntoView({ behavior: "smooth" });
-  }, [workspace?.messages.length, page]);
-  useEffect(() => {
-    if (page !== "story" || !branchId || activeRun?.status !== "running") return;
-    const timer = setInterval(() => void loadWorkspace(branchId).catch(e => setError(e.message)), 2000);
-    return () => clearInterval(timer);
-  }, [page, branchId, activeRun?.status, loadWorkspace]);
+    if (page === "story") end.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }, [workspace?.messages.length, page, !!processing.progress]);
   useEffect(() => {
     if (page !== "imports" || !branchId) return;
     let active = true;
@@ -171,6 +173,7 @@ function WorkspaceApp() {
       setBranchId(id);
       setReview(null);
       setAction("");
+      setDraft("");
       setAuthorView(false);
       setPage("story");
     });
@@ -271,6 +274,7 @@ function WorkspaceApp() {
     run(async () => {
       if (!workspace || activeRun) return;
       const controller = new AbortController();
+      const progressToken = processing.begin(turnMode);
       generation.current = controller;
       try {
         setDraft("");
@@ -278,8 +282,9 @@ function WorkspaceApp() {
           await streamTurn(
             `/branches/${workspace.branch.id}/turns/stream`,
             { action, expectedCheckpointId: workspace.checkpoint.id },
-            (text) => setDraft((old) => old + text),
+            (text) => { if (currentBranch.current === workspace.branch.id) setDraft((old) => old + text); },
             controller.signal,
+            event => processing.streamEvent(event, progressToken),
           );
         } else {
           await post(
@@ -288,22 +293,33 @@ function WorkspaceApp() {
             controller.signal,
           );
         }
-        setAction("");
+        if (currentBranch.current === workspace.branch.id) setAction("");
+        processing.loadingSaved(progressToken);
       } catch (e) {
         if ((e as Error).name !== "AbortError") throw e;
         setNotice("Stopped. Reloading the last committed checkpoint.");
       } finally {
-        generation.current = null;
-        await loadWorkspace(workspace.branch.id);
-        setDraft("");
+        if (generation.current === controller) generation.current = null;
+        try {
+          if (currentBranch.current === workspace.branch.id) { await loadWorkspace(workspace.branch.id); setDraft(""); }
+        } finally { processing.finish(progressToken); }
       }
     });
   const recoverRun = (id: string, operation: "retry" | "cancel") => run(async () => {
     if (!workspace) return;
-    try { await post(`/runs/${id}/${operation}`); }
-    finally { await loadWorkspace(workspace.branch.id); }
+    const progressToken = operation === "retry" ? processing.begin("autonomous", id) : null;
+    try { await post(`/runs/${id}/${operation}`); if (progressToken !== null) processing.loadingSaved(progressToken); }
+    finally { try { if (currentBranch.current === workspace.branch.id) await loadWorkspace(workspace.branch.id); } finally { if (progressToken !== null) processing.finish(progressToken); } }
     setNotice(operation === "cancel" ? "Saved generation cancelled. Your checkpoint is unchanged." : "Saved generation retried.");
   });
+  useEffect(() => {
+    if (!branchId || page === "library") return;
+    const params = new URLSearchParams(window.location.search);
+    params.set("branch", branchId);
+    if (page === "engine") params.set("view", "engine"); else params.delete("view");
+    if (page !== "imports") params.delete("import");
+    window.history.replaceState(null, "", `?${params}`);
+  }, [branchId, page]);
   const inspect = (id: string) =>
     run(async () => {
       const data = await api<Review>(`/imports/${id}?includeCandidates=false`);
@@ -327,7 +343,7 @@ function WorkspaceApp() {
       setDecisions(values.decisions); setResumeState(values.resumeState); setThreadDecisions(values.threads); setLegacySaved(JSON.stringify(values));
 
     });
-  useEffect(() => { const params = new URLSearchParams(window.location.search); const savedBranch = params.get("branch"), savedImport = params.get("import"); if (!savedBranch) return; void run(async () => { await loadWorkspace(savedBranch); setBranchId(savedBranch); if (savedImport) { await inspect(savedImport); setPage("imports"); } else setPage("story"); }); }, []);
+  useEffect(() => { const params = new URLSearchParams(window.location.search); const savedBranch = params.get("branch"), savedImport = params.get("import"); if (!savedBranch) return; void run(async () => { await loadWorkspace(savedBranch); setBranchId(savedBranch); if (savedImport) { await inspect(savedImport); setPage("imports"); } else setPage(params.get("view") === "engine" ? "engine" : "story"); }); }, []);
   useEffect(() => { window.scrollTo({ top: 0 }); }, [page, review?.job.id]);
   useEffect(() => { window.scrollTo({ top: 0 }); }, [legacyPage]);
   useEffect(() => {
@@ -483,6 +499,9 @@ function WorkspaceApp() {
             workspace={workspace}
             busy={busy}
             onRefresh={() => loadWorkspace(workspace.branch.id)}
+            generationProgress={processing.progress}
+            progressConnectionError={processing.connectionError}
+            onRetryRun={id => recoverRun(id, "retry")}
           />
         )}
         {page === "library" && (
@@ -687,6 +706,7 @@ function WorkspaceApp() {
                     <div className="prose">{draft}</div>
                   </article>
                 )}
+                <GenerationProgress progress={processing.progress} connectionError={processing.connectionError} />
                 <div ref={end} />
               </div>
               {activeRun && <section className="panel story-recovery" aria-live="polite">
