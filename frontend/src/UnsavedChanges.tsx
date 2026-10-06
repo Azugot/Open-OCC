@@ -28,7 +28,7 @@ export function UnsavedProvider({ children }: { children: ReactNode }) {
     {pending && <div className="modal-backdrop"><section className="modal unsaved-dialog" role="dialog" aria-modal="true" aria-labelledby="unsaved-title" onKeyDown={e => {
       if (e.key === "Escape" && !saving) finish(false);
       if (e.key === "Tab") { const buttons = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")); if (e.shiftKey && document.activeElement === buttons[0]) { e.preventDefault(); buttons.at(-1)?.focus(); } else if (!e.shiftKey && document.activeElement === buttons.at(-1)) { e.preventDefault(); buttons[0]?.focus(); } }
-    }}><h2 id="unsaved-title">Keep your review edits?</h2><p>You have unsaved changes. Save them before continuing, discard them, or stay here.</p>
+    }}><h2 id="unsaved-title">Keep your edits?</h2><p>You have unsaved changes. Save them before continuing, discard them, or stay here.</p>
       {error && <p role="alert" className="text-error">{error}</p>}
       <div className="button-row"><button autoFocus disabled={saving} onClick={() => finish(false)}>Stay</button>
       <button disabled={saving} onClick={() => { for (const editor of entries.current.values()) editor.discard(); entries.current.clear(); setDirty(false); finish(true); }}>Discard changes</button>

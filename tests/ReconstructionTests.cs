@@ -49,7 +49,8 @@ public class ReconstructionTests : IAsyncLifetime
         var model = new TimedOut();
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Reconstruction.Step(db, job, model, default));
         Assert.Contains("timed out", error.Message); Assert.Equal(1, model.Calls); Assert.Equal(1, job.Calls);
-        Assert.Equal(0, job.Processed); Assert.Empty(await db.ImportResults.Where(x => x.JobId == job.Id).ToListAsync());
+        Assert.Equal(0, job.Processed); Assert.Empty(await db.ImportResults.Where(x => x.JobId == job.Id && x.Stage != ImportProgress.TimingStage).ToListAsync());
+        Assert.Single(await db.ImportResults.Where(x => x.JobId == job.Id && x.Stage == ImportProgress.TimingStage).ToListAsync());
     }
     [Theory]
     [InlineData(0, "active", "goal", "importance (amount)")]

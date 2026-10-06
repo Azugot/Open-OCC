@@ -69,6 +69,7 @@ function WorkspaceApp() {
   const [legacyPage, setLegacyPage] = useState(0);
   const [legacySaved, setLegacySaved] = useState("");
   const [page, setPage] = useState<Page>("library");
+  const [engineInitialTab, setEngineInitialTab] = useState<"live" | "characters">("live");
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [branchId, setBranchId] = useState<string | null>(null);
@@ -478,6 +479,7 @@ function WorkspaceApp() {
         )}
         {page === "engine" && workspace && (
           <StoryEngine
+            initialTab={engineInitialTab}
             workspace={workspace}
             busy={busy}
             onRefresh={() => loadWorkspace(workspace.branch.id)}
@@ -823,17 +825,7 @@ function WorkspaceApp() {
                   </small>
                 </div>
               )}
-              {authorView && workspace.characters?.length ? (
-                <div className="state-section">
-                  <h3>CHARACTERS</h3>
-                  {workspace.characters.slice(0, 8).map((character) => (
-                    <div className="fact" key={character.id}>
-                      <p>{character.name}</p>
-                      <small>{character.description || character.status}</small>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
+              <div className="state-section"><h3>CHARACTERS</h3><p>Profiles, relationships, abilities, and history.</p><button onClick={() => { setEngineInitialTab("characters"); navigate("engine"); }}>View all characters</button></div>
               {authorView && (
                 <div className="state-section">
                   <h3>ACTIVE THREADS</h3>

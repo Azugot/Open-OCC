@@ -6,6 +6,8 @@ public record ImportStateConflict(Guid ProposalId, string Key, string Category, 
 
 public static class ImportReview
 {
+    public static bool PlayerProficiency(ImportClaim claim, ResumeProposal? resume) => (claim.CapabilityCategory is null or "proficiency") &&
+        (claim.Owner is null || claim.Owner.Equals("player", StringComparison.OrdinalIgnoreCase) || claim.Owner.Equals(resume?.PlayerCharacterName, StringComparison.OrdinalIgnoreCase));
     public static void Map(WebApplication app)
     {
         app.MapPost("/api/imports/{id:guid}/prepare", async (Guid id, StoryDb db, CancellationToken ct) =>
@@ -139,7 +141,7 @@ public static class ImportReview
         foreach (var row in rows.Where(x => x.Current && !x.Excluded))
         {
             var claim = Json.Read<ImportClaim>(row.ContentJson);
-            if (claim.Disposition != "current" || claim.Category is not ("skill" or "inventory")) continue;
+            if (claim.Disposition != "current" || claim.Category is not ("skill" or "inventory") || claim.Category == "skill" && !PlayerProficiency(claim, resume)) continue;
             var proposed = claim.Category == "skill" ? claim.Value : claim.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture);
             string? actual = null;
             if (claim.Category == "skill" && resume?.State?.Skills.TryGetValue(claim.Subject, out var rank) == true) actual = rank;
@@ -163,7 +165,7 @@ public static class ImportReview
         if (request.SyncResume)
         {
             var claim = request.Claim;
-            if (request.Excluded || claim.Disposition != "current" || claim.Category is not ("skill" or "inventory"))
+            if (request.Excluded || claim.Disposition != "current" || claim.Category is not ("skill" or "inventory") || claim.Category == "skill" && !PlayerProficiency(claim, job.ResumeJson is null ? null : Json.Read<ResumeProposal>(job.ResumeJson)))
                 throw new InvalidOperationException("Only included current skill or inventory proposals can update the resume checkpoint.");
             var resume = job.ResumeJson is null ? null : Json.Read<ResumeProposal>(job.ResumeJson);
             if (resume?.State is null) throw new InvalidOperationException("Provide a resume checkpoint before synchronizing a proposal.");
@@ -215,7 +217,7 @@ public static class ImportReview
         Reconstruction.ValidateResume(resume, byOrdinal.Keys.ToHashSet());
         var conflicts = StateConflicts(rows, resume);
         if (conflicts.Length > 0) throw new InvalidOperationException(string.Join("\n", conflicts.Select(x => x.Text)));
-        var importedWorld = ImportedWorldCompiler.Compile(StoryWorld.From(head), Json.Read<StoryState>(head.StateJson), job, resume, claims, byOrdinal);
+        var importedWorld = ImportedWorldCompiler.Compile(StoryWorld.From(head), Json.Read<StoryState>(head.StateJson), job, resume, claims, byOrdinal, head.Sequence + 1);
         var checkpoint = new Checkpoint { BranchId = branch.Id, Sequence = head.Sequence + 1, Label = "Agent-reviewed import", StateJson = Json.Write(resume.State), WorldJson = Json.Write(importedWorld) };
         db.ImportedHistory.Add(new ImportedHistory { BranchId = branch.Id, SourceId = job.SourceId, JobId = job.Id, EffectiveSequence = checkpoint.Sequence });
         var characters = await db.Characters.Where(x => x.CampaignId == branch.CampaignId).ToListAsync(ct);
@@ -227,6 +229,8 @@ public static class ImportReview
                     Goals = importedWorld.Characters.SingleOrDefault(x => x.EntityId == entity.Id)?.Goal ?? "" };
                 characters.Add(character); db.Characters.Add(character);
             }
+        CharacterService.Normalize(importedWorld, resume.State!, characters, sequence: checkpoint.Sequence);
+        checkpoint.WorldJson = Json.Write(importedWorld);
         Character? RegisteredCharacter(string reference)
         {
             var named = claims.FirstOrDefault(c => c.Key == reference && (c.Category == "character" || c.EntityKind is "character" or "being"))?.Subject ?? reference;

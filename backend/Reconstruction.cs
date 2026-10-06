@@ -6,7 +6,8 @@ namespace Story;
 
 public record ImportClaim(string Key, string Category, string Text, string Subject, string Target, string Value, int Amount,
     string Kind, string Visibility, string[] KnownBy, double Confidence, int[] EvidenceOrdinals, string Disposition, string[] SupersedesKeys,
-    string? EntityKind = null, string? Location = null, string? Actor = null, string[]? RelatedEntityKeys = null, SourceRange[]? EvidenceRanges = null);
+    string? EntityKind = null, string? Location = null, string? Actor = null, string[]? RelatedEntityKeys = null, SourceRange[]? EvidenceRanges = null,
+    string? Owner = null, string? CapabilityCategory = null);
 public record ReconstructionIssue(string Code, string Text, bool Blocking, int[] EvidenceOrdinals);
 public record ResumeProposal(StoryState? State, int[] EvidenceOrdinals, string LatestAction, bool ReplyPending, string[] Missing, string? PlayerCharacterName = null);
 public record AgentResult(ImportClaim[] Claims, ReconstructionIssue[] Issues, ResumeProposal? Resume, string Summary, string[] ResolvedIssueCodes);
@@ -35,7 +36,7 @@ public static class Reconstruction
         knowledge: subject=character name, text=belief, target=related fact key or empty.
         world: subject=rule/location/faction, value=name.
         inventory: subject=one named item (never aggregate belongings), amount=absolute current count.
-        skill: subject=ability, value=current rank/progress.
+        skill: subject=ability, value=current rank/progress; owner=established character name/key (null means player), capabilityCategory=ability/power/proficiency (null means proficiency).
         thread: subject=title, target=active/resolved, value=goal/promise/deadline/mystery/conflict/thread, amount=importance 1..5 (never zero).
         entity: subject=nonblank established name, entityKind=character/object/being/place (required, never null). A named harbor is place; a named key is object. entityKind describes the entity; kind describes information certainty. Unknown name/kind requires an issue, not a guessed entity.
         connection: subject=source name, target=target name, value=relationship type.
@@ -437,6 +438,8 @@ public static class Reconstruction
     public static void ValidateClaim(ImportClaim c, HashSet<int> allowed, HashSet<string> keys, bool stored = false)
     {
         if (c is null) throw new InvalidOperationException("A claim must be an object, not null.");
+        if (c.Owner is { } owner && (string.IsNullOrWhiteSpace(owner) || owner.Length > 120) || c.CapabilityCategory is not (null or "ability" or "power" or "proficiency"))
+            throw new InvalidOperationException("Invalid capability owner or category.");
         if (c.Category is null || !Categories.Contains(c.Category))
             throw new InvalidOperationException("Claim category must be one of: " + string.Join(", ", Categories) + ".");
         if (c.EvidenceOrdinals is { } citations && citations.Any(x => !allowed.Contains(x)))
@@ -632,7 +635,9 @@ public static class Reconstruction
         props["subject"]!["description"] = "Established name. Must be nonblank for entity, character, relationship, knowledge, inventory, skill, thread, and connection; never infer a missing name.";
         props["relatedEntityKeys"] = JsonNode.Parse("""{"anyOf":[{"type":"null"},{"type":"array","maxItems":30,"items":{"type":"string","maxLength":120}}]}""");
         props["evidenceRanges"] = JsonNode.Parse("""{"anyOf":[{"type":"null"},{"type":"array","maxItems":64,"items":{"type":"object","properties":{"start":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1}},"required":["start","length"],"additionalProperties":false}}]}""");
-        claim["required"] = new JsonArray(props.Where(x => x.Key is not ("location" or "actor" or "entityKind" or "relatedEntityKeys" or "evidenceRanges")).Select(x => JsonValue.Create(x.Key)).ToArray<JsonNode?>());
+        props["owner"] = JsonNode.Parse("""{"anyOf":[{"type":"null"},{"type":"string","maxLength":120}]}""");
+        props["capabilityCategory"] = JsonNode.Parse("""{"enum":[null,"ability","power","proficiency"]}""");
+        claim["required"] = new JsonArray(props.Where(x => x.Key is not ("location" or "actor" or "entityKind" or "relatedEntityKeys" or "evidenceRanges" or "owner" or "capabilityCategory")).Select(x => JsonValue.Create(x.Key)).ToArray<JsonNode?>());
         // Keep old non-entity results readable, while closing the generation-schema gap for entities.
         claim["anyOf"] = new JsonArray(
             new JsonObject { ["properties"] = new JsonObject { ["category"] = new JsonObject { ["enum"] = new JsonArray(Categories.Where(x => x != "entity").Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()) } } },

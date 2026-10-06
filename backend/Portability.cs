@@ -84,6 +84,7 @@ public static class PortabilityService
         var sourceMap = portable.Sources.ToDictionary(x => x.Id, _ => Guid.NewGuid());
         var jobMap = portable.Jobs.ToDictionary(x => x.Id, _ => Guid.NewGuid());
         var segmentMap = portable.Segments.ToDictionary(x => x.Id, _ => Guid.NewGuid());
+        var characterMap = (portable.Characters ?? []).ToDictionary(x => x.Id, _ => Guid.NewGuid());
         string RemapEvidence(string json)
         {
             var root = System.Text.Json.Nodes.JsonNode.Parse(json);
@@ -93,7 +94,7 @@ public static class PortabilityService
                 if (node is not System.Text.Json.Nodes.JsonObject obj) return;
                 foreach (var entry in obj.ToArray())
                 {
-                    var map = entry.Key switch { "sourceId" => sourceMap, "jobId" => jobMap, "segmentId" => segmentMap, _ => null };
+                    var map = entry.Key switch { "sourceId" => sourceMap, "jobId" => jobMap, "segmentId" => segmentMap, "campaignCharacterId" => characterMap, _ => null };
                     if (map is not null && entry.Value is System.Text.Json.Nodes.JsonValue value && value.TryGetValue<string>(out var id) && Guid.TryParse(id, out var old) && map.TryGetValue(old, out var mapped)) obj[entry.Key] = mapped.ToString();
                     else Visit(entry.Value);
                 }
@@ -126,7 +127,6 @@ public static class PortabilityService
         var evidence = portable.Evidence.Where(x => factMap.ContainsKey(x.FactId) && segmentMap.ContainsKey(x.SegmentId)).Select(x => new FactEvidence { Id = Guid.NewGuid(), FactId = factMap[x.FactId], SegmentId = segmentMap[x.SegmentId] }).ToList();
         var corrections = portable.Corrections.Where(x => branchMap.ContainsKey(x.BranchId) && factMap.ContainsKey(x.FactId)).Select(x => new FactCorrection { Id = Guid.NewGuid(), BranchId = branchMap[x.BranchId], FactId = factMap[x.FactId], PreviousText = x.PreviousText, NewText = x.NewText, Reason = x.Reason, CreatedAt = x.CreatedAt }).ToList();
         var threads = portable.Threads.Where(x => branchMap.ContainsKey(x.BranchId)).Select(x => new NarrativeThread { Id = threadMap[x.Id], BranchId = branchMap[x.BranchId], Title = x.Title, Details = x.Details, Kind = x.Kind, Status = x.Status, Importance = x.Importance, EffectiveSequence = x.EffectiveSequence }).ToList();
-        var characterMap = (portable.Characters ?? []).ToDictionary(x => x.Id, _ => Guid.NewGuid());
         var characters = (portable.Characters ?? []).Select(x => new Character { Id = characterMap[x.Id], CampaignId = campaign.Id, Name = x.Name, Description = x.Description, Goals = x.Goals, Status = x.Status, CreatedAt = x.CreatedAt }).ToList();
         var relationships = (portable.Relationships ?? []).Where(x => branchMap.ContainsKey(x.BranchId) && characterMap.ContainsKey(x.FromCharacterId) && characterMap.ContainsKey(x.ToCharacterId)).Select(x => new Relationship { Id = Guid.NewGuid(), BranchId = branchMap[x.BranchId], FromCharacterId = characterMap[x.FromCharacterId], ToCharacterId = characterMap[x.ToCharacterId], Label = x.Label, Score = x.Score, Notes = x.Notes, EffectiveSequence = x.EffectiveSequence }).ToList();
         var knowledge = (portable.Knowledge ?? []).Where(x => branchMap.ContainsKey(x.BranchId) && characterMap.ContainsKey(x.CharacterId)).Select(x => new KnowledgeRecord { Id = Guid.NewGuid(), BranchId = branchMap[x.BranchId], CharacterId = characterMap[x.CharacterId], FactId = x.FactId is { } f && factMap.TryGetValue(f, out var mappedFact) ? mappedFact : null, Subject = x.Subject, BeliefType = x.BeliefType, Confidence = x.Confidence, EffectiveSequence = x.EffectiveSequence, Source = x.Source }).ToList();

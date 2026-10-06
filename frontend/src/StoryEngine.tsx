@@ -15,6 +15,8 @@ import "./engine.css";
 import ModelPicker from "./ModelPicker";
 import { TranscriptDrawer } from "./TranscriptViewer";
 import type { SourceEvidence } from "./TranscriptViewer";
+import Characters from "./Characters";
+import { useUnsaved } from "./UnsavedChanges";
 
 type Entity = {
   id: string;
@@ -101,7 +103,7 @@ type Run = {
   };
 };
 type Engine = { checkpointId: string; world: World; runs: Run[] };
-type Tab = "live" | "graph" | "memory" | "author";
+type Tab = "live" | "graph" | "memory" | "author" | "characters";
 const kinds = ["character", "object", "being", "place"];
 const supportsAgent = (p: Profiles["profiles"][number]) => p.agentSupported ?? ["fixture", "openai", "openai-compatible", "ollama", "lemonade"].includes(p.adapter);
 const colors: Record<string, string> = {
@@ -115,14 +117,19 @@ export default function StoryEngine({
   workspace,
   busy,
   onRefresh,
+  initialTab = "live",
 }: {
   workspace: Workspace;
   busy: boolean;
   onRefresh: () => Promise<void>;
+  initialTab?: "live" | "characters";
 }) {
   const [data, setData] = useState<Engine | null>(null);
   const [checkpoint, setCheckpoint] = useState("");
-  const [tab, setTab] = useState<Tab>("live");
+  const [tab, setTab] = useState<Tab>(initialTab);
+  const [characterId, setCharacterId] = useState("");
+  const { confirm } = useUnsaved();
+  const move = (action: () => void) => void (async () => { if (await confirm()) action(); })();
   const [spoilers, setSpoilers] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -153,7 +160,6 @@ export default function StoryEngine({
     }
   }, [branch, checkpoint]);
   useEffect(() => {
-    setData(null);
     setSelected("");
     setSourceEvidence(null);
     setEditing(null);
@@ -284,8 +290,9 @@ export default function StoryEngine({
     ["live", Activity, "Live room"],
     ["graph", GitBranch, "World graph"],
     ["memory", Brain, "Memory"],
+    ["characters", Brain, "Characters"],
   ];
-  if (spoilers) tabs.push(["author", Settings, "Director & characters"]);
+  if (spoilers) tabs.push(["author", Settings, "Director settings"]);
 
   return (
     <section className="engine-page">
@@ -301,7 +308,7 @@ export default function StoryEngine({
           <input
             type="checkbox"
             checked={spoilers}
-            onChange={(e) => setSpoilers(e.target.checked)}
+            onChange={(e) => { const checked = e.target.checked; move(() => setSpoilers(checked)); }}
           />
           <Shield size={16} /> Author view · reveals secrets
         </label>
@@ -312,8 +319,7 @@ export default function StoryEngine({
           <select
             value={checkpoint}
             onChange={(e) => {
-              setCheckpoint(e.target.value);
-              setSettings(null);
+              const value = e.target.value; move(() => { setCheckpoint(value); setSettings(null); });
             }}
           >
             <option value="">Latest committed world</option>
@@ -344,7 +350,7 @@ export default function StoryEngine({
             key={id}
             className={tab === id ? "active" : ""}
             aria-current={tab === id ? "page" : undefined}
-            onClick={() => setTab(id)}
+            onClick={() => move(() => setTab(id))}
           >
             <Icon size={17} />
             {label}
@@ -352,6 +358,7 @@ export default function StoryEngine({
         ))}
       </nav>
       {!data && !error && <p role="status">Loading world…</p>}
+      {data && tab === "characters" && <Characters key={branch} branchId={branch} checkpointId={data.checkpointId} author={spoilers} busy={busy || pending || saving || data.checkpointId !== (checkpoint || workspace.checkpoint.id)} onRefresh={onRefresh} initialId={characterId} />}
       {data && tab === "live" && (
         <>
           {data.runs.length > 0 && !historical && (
@@ -583,6 +590,7 @@ export default function StoryEngine({
               {selected && entityIds.has(selected) ? (
                 <>
                   <h3>{named(selected)}</h3>
+                  {world?.entities.some(e => e.id === selected && ["character", "being"].includes(e.kind)) && <button onClick={() => move(() => { setCharacterId(selected); setTab("characters"); })}>Open character profile</button>}
                   <p>
                     {
                       world?.entities.find((e) => e.id === selected)
@@ -675,6 +683,7 @@ export default function StoryEngine({
             mistaken. Editing a belief changes future context without rewriting
             history.
           </p>
+          {owner !== "director" && world?.entities.some(e => e.id === owner && ["character", "being"].includes(e.kind)) && <button onClick={() => move(() => { setCharacterId(owner); setTab("characters"); })}>Open memory owner's profile</button>}
           {historical && (
             <p className="engine-footnote">
               Choose the latest checkpoint to edit memory.
@@ -886,40 +895,7 @@ export default function StoryEngine({
               Save settings
             </button>
           </form>
-          <h2>Character workspaces</h2>
-          <p>
-            Goals, beliefs, emotions and concise decision summaries guide
-            independent characters.
-          </p>
-          <div className="engine-character-grid">
-            {(liveWorld?.characters ?? []).map((c) => (
-              <article key={c.entityId} className="engine-character">
-                <h3>{named(c.entityId)}</h3>
-                <dl>
-                  {[
-                    ["Goal", c.goal],
-                    ["Belief", c.belief],
-                    ["Emotion", c.emotion],
-                    ["Intention", c.intention],
-                    ["Decision summary", c.decisionSummary],
-                  ].map(([label, value]) => (
-                    <div key={label}>
-                      <dt>{label}</dt>
-                      <dd>{value || "—"}</dd>
-                    </div>
-                  ))}
-                </dl>
-                <div>
-                  {Object.entries(c.stats).map(([stat, value]) => (
-                    <span key={stat} className="engine-badge">
-                      {stat} {value >= 0 ? "+" : ""}
-                      {value}
-                    </span>
-                  ))}
-                </div>
-              </article>
-            ))}
-          </div>
+          <button onClick={() => move(() => setTab("characters"))}>Open character profiles</button>
           <h2>Checks & rulings</h2>
           <p>
             Modifiers and difficulty are fixed before the server rolls a d20.

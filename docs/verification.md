@@ -1,5 +1,13 @@
 # Verification
 
+## October 6, 2026 character profiles and capabilities
+
+- **210 .NET tests pass**; frontend TypeScript/Vite and Docker builds pass. Additive snapshot fields require no database migration and retain export version 5. Package vulnerability metadata was unavailable in the local network configuration (NU1900); compilation and tests completed successfully.
+- **Isolated PostgreSQL character smoke passes**: complete 12-character roster, stable renaming, aliases, historical snapshots, stale saves, private NPC power visibility, relationship changes, portable round trip, and atomic invalid-owner rejection.
+- **Import, skill-repair, and unsaved-draft scripted checks pass**, including grouped source coverage, exact original bytes, approval, portable restore, pause/retry, and comparison of overlapping changes. Providers return recorded responses; no live model calls were made.
+- **Browser checks** cover story-sidebar navigation, the complete roster, search, author profile saving, capability deactivation, reload persistence, relationship history, Stay/Save-and-continue protection, and retained stale edits followed by comparison and successful resubmission. A 390-pixel viewport uses one character column without document overflow; author scope loading is gated before editing.
+- Prompt and state tests verify narrator/character capability delivery and limitations, unchanged generated ranks, private player details, manual proficiency synchronization, ambiguous identity handling, recorded checkpoint differences, and fork isolation. These checks validate contracts and persistence; they do not measure live narration quality.
+
 ## September 29, 2026 model discovery
 
 - **112 .NET tests pass** with discovery, authenticated model-list requests, cache/refresh, modality filtering, invalid/oversized catalogs, cancellation, distinct task models, preserved connector defaults and captured imports. Lemonade agents use instruction-constrained JSON without unsupported JSON mode.

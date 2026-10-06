@@ -33,9 +33,20 @@ public static class PortableValidation
         {
             if (node.ValueKind == JsonValueKind.Array) { foreach (var child in node.EnumerateArray()) CheckJson(child, label); }
             if (node.ValueKind != JsonValueKind.Object) return;
+            if (node.TryGetProperty("settings", out _) && node.TryGetProperty("entities", out _) && node.TryGetProperty("playerLocationId", out _))
+                CharacterService.Validate(node.Deserialize<StoryWorld>(Json.Options)!, maps["Characters"]);
+            if (node.TryGetProperty("endOffset", out _) && node.TryGetProperty("segmentId", out _) && node.TryGetProperty("sourceId", out _))
+            {
+                var citation = node.Deserialize<SourceEvidence>(Json.Options)!;
+                var segment = portable.Segments.SingleOrDefault(s => s.Id == citation.SegmentId);
+                var job = portable.Jobs.SingleOrDefault(j => j.Id == citation.JobId);
+                if (segment is null || job is null || segment.JobId != job.Id || job.SourceId != citation.SourceId || segment.Ordinal != citation.Ordinal ||
+                    citation.StartOffset < segment.Start || citation.EndOffset < citation.StartOffset || citation.EndOffset > (long)segment.Start + Math.Max(segment.Length, segment.Text.Length))
+                    throw new InvalidOperationException($"Export {label} contains invalid source evidence references or offsets.");
+            }
             foreach (var field in node.EnumerateObject())
             {
-                var collection = field.Name switch { "sourceId" => "Sources", "jobId" => "Jobs", "segmentId" => "Segments", _ => null };
+                var collection = field.Name switch { "sourceId" => "Sources", "jobId" => "Jobs", "segmentId" => "Segments", "campaignCharacterId" => "Characters", _ => null };
                 if (collection is not null && field.Value.ValueKind == JsonValueKind.String && field.Value.TryGetGuid(out var id) && !maps[collection].Contains(id))
                     throw new InvalidOperationException($"Export {label} references missing {field.Name}.");
                 CheckJson(field.Value, label);

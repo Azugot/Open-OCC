@@ -9,7 +9,7 @@ public static class ImportedWorldCompiler
     const string Unknown = "Not established in the source.";
     static bool Canonical(ImportClaim claim) => claim.Kind is not ("belief" or "rumor");
     public static StoryWorld Compile(StoryWorld prior, StoryState priorState, ImportJob job, ResumeProposal resume,
-        IReadOnlyList<ImportClaim> claims, IReadOnlyDictionary<int, ImportSegment> blocks)
+        IReadOnlyList<ImportClaim> claims, IReadOnlyDictionary<int, ImportSegment> blocks, int sequence = 0)
     {
         var state = resume.State ?? throw new InvalidOperationException("A resume state is required.");
         var world = priorState == StoryState.Empty || priorState.Location == StoryState.Empty.Location
@@ -28,6 +28,10 @@ public static class ImportedWorldCompiler
             world.Events = world.Events.Select(e => e with { ActorId = Remap(e.ActorId), PerceivedBy = e.PerceivedBy.Select(Remap).Distinct().ToArray(), EntityIds = e.EntityIds.Select(Remap).Distinct().ToArray() }).ToList();
             world.Connections = world.Connections.Select(c => c with { SourceId = Remap(c.SourceId), TargetId = Remap(c.TargetId) }).ToList();
             world.Memories = world.Memories.Select(m => m with { OwnerId = Remap(m.OwnerId) }).ToList();
+            world.CharacterProfiles.RemoveAll(p => p.EntityId == "player");
+            world.CharacterProfiles = world.CharacterProfiles.Select(p => p with { EntityId = Remap(p.EntityId) }).ToList();
+            world.Capabilities = world.Capabilities.Select(c => c with { OwnerId = Remap(c.OwnerId), KnownTo = c.KnownTo?.Select(Remap).Distinct().ToArray() }).ToList();
+            world.RelationshipHistory = world.RelationshipHistory.Select(h => h with { FromId = Remap(h.FromId), ToId = Remap(h.ToId), KnownTo = h.KnownTo?.Select(Remap).Distinct().ToArray() }).ToList();
         }
         var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var entity in world.Entities) aliases.TryAdd(entity.Name, entity.Id);
@@ -178,8 +182,8 @@ public static class ImportedWorldCompiler
             var knowers = claim.KnownBy.Select(name => Resolve(name) ?? throw new InvalidOperationException($"{claim.Key} names an unregistered knower: {name}. Edit or exclude it first.")).ToHashSet();
             if (claim.Disposition == "current" && claim.Category is "character" or "entity" && Resolve(claim.Key) == "player") knowers.Add("player");
             if (claim.Category == "knowledge") knowers.Add(Resolve(claim.Subject) ?? throw new InvalidOperationException($"{claim.Key} references an unresolved character."));
-            if (claim.Disposition == "current" && claim.Category is "inventory" or "skill" or "condition") knowers.Add("player");
-            var entities = new[] { Resolve(claim.Key), Resolve(claim.Subject), Resolve(claim.Target), Resolve(claim.Actor), Resolve(claim.Location) }
+            if (claim.Disposition == "current" && (claim.Category is "inventory" or "condition" || claim.Category == "skill" && (claim.Owner is null || Resolve(claim.Owner) == "player"))) knowers.Add("player");
+            var entities = new[] { Resolve(claim.Key), Resolve(claim.Subject), Resolve(claim.Target), Resolve(claim.Actor), Resolve(claim.Location), Resolve(claim.Owner) }
                 .Concat((claim.RelatedEntityKeys ?? []).Select(Resolve)).OfType<string>().Distinct().ToArray();
             var locationId = Resolve(claim.Location) ?? "";
             var eventId = Id("source-event", job.SourceId + ":" + claim.Key + ":" + claim.Text);
@@ -222,6 +226,28 @@ public static class ImportedWorldCompiler
             Link("player", Resolve(item.Key)!, "carries", resumeEvent);
             foreach (var owner in new[] { "player", "director" }) Memory(owner, "long", "fact", $"Ending inventory: {item.Key} × {item.Value}.", resumeEvent);
         }
+        CharacterService.Normalize(world, state, sequence: sequence);
+        foreach (var claim in claims.Where(c => c.Category == "relationship" && Canonical(c)))
+        {
+            var source = Resolve(claim.Subject); var target = Resolve(claim.Target);
+            var eventId = Id("source-event", job.SourceId + ":" + claim.Key + ":" + claim.Text);
+            var edgeId = Id("connection", source + ":" + target + ":" + claim.Value + ":" + eventId);
+            var index = world.RelationshipHistory.FindIndex(h => h.Id == "connection-" + edgeId);
+            if (index >= 0) world.RelationshipHistory[index] = world.RelationshipHistory[index] with { Score = claim.Amount };
+        }
+        foreach (var claim in claims.Where(c => c.Category == "skill" && c.Disposition == "current" && Canonical(c)))
+        {
+            var owner = claim.Owner is null ? "player" : Resolve(claim.Owner);
+            if (owner is null || !world.Entities.Any(e => e.Id == owner && CharacterService.IsCharacter(e))) throw new InvalidOperationException($"{claim.Key} references an unresolved capability owner. Edit or exclude it first.");
+            var category = claim.CapabilityCategory ?? "proficiency";
+            if (owner == "player" && category != "proficiency") world.Capabilities.RemoveAll(c => c.Id.StartsWith("legacy-skill-") && c.OwnerId == owner && c.Name.Equals(claim.Subject, StringComparison.OrdinalIgnoreCase));
+            var existing = world.Capabilities.SingleOrDefault(c => c.OwnerId == owner && c.Category == category && c.Name.Equals(claim.Subject, StringComparison.OrdinalIgnoreCase));
+            var audience = claim.Visibility == "public" ? null : claim.KnownBy.Select(Resolve).OfType<string>().Append(owner).Append("director").Distinct().ToArray();
+            var cap = new CharacterCapability(existing?.Id ?? Id("capability", owner + ":" + category + ":" + claim.Subject), owner, category, claim.Subject, claim.Text, claim.Value,
+                KnownTo: audience, SourceEvidence: Evidence(claim.EvidenceOrdinals, claim.EvidenceRanges));
+            if (existing is null) world.Capabilities.Add(cap); else world.Capabilities[world.Capabilities.IndexOf(existing)] = cap;
+        }
+        CharacterService.SyncPlayerSkills(world, state); CharacterService.Validate(world);
         // Only final-scene context is short-term; historical public events do not imply attendance.
         foreach (var owner in state.Participants.Select(Resolve).OfType<string>().Append("player").Append("director").Distinct()) Memory(owner, "short", "fact", $"Current scene: {state.Location}; time: {state.Time}.", resumeEvent);
         Memory("director", "short", "fact", resumeEvent.Text, resumeEvent);

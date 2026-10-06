@@ -21,7 +21,7 @@ public record ApproveImport(Guid ExpectedCheckpointId, StoryState State, ReviewD
 public record CorrectFactRequest(Guid ExpectedCheckpointId, string Text, string Reason, string Visibility = "public", string Kind = "fact", double Confidence = 1, string[]? KnownBy = null);
 public record CreateWorldRequest(string Name, string Description = "");
 public record CreateWorldVersionRequest(string RulesJson = "{}", string LocationsJson = "[]", string FactionsJson = "[]", string AuthorInstructions = "");
-public record CreateCharacterRequest(string Name, string Description = "", string Goals = "", string Status = "active");
+public record CreateCharacterRequest(string Name, string Description = "", string Goals = "", string Status = "active", Guid? BranchId = null, Guid? ExpectedCheckpointId = null);
 public record UpsertRelationshipRequest(Guid FromCharacterId, Guid ToCharacterId, string Label, int Score = 0, string Notes = "");
 public record UpsertKnowledgeRequest(Guid CharacterId, Guid? FactId, string Subject, string BeliefType = "fact", double Confidence = 1);
 public record ApplyMechanicsRequest(Guid ExpectedCheckpointId, string Kind, string Subject, int Delta, string Reason);
@@ -110,6 +110,9 @@ public static class CampaignService
         var branch = await db.Branches.SingleAsync(x => x.Id == run.BranchId, ct);
         if (branch.HeadCheckpointId != run.ExpectedCheckpointId) throw new DbUpdateConcurrencyException("Branch changed. Reload before continuing.");
         var current = await db.Checkpoints.SingleAsync(x => x.Id == branch.HeadCheckpointId, ct);
+        // Story generation cannot grant capabilities or change author-managed skill ranks.
+        var priorState = Json.Read<StoryState>(current.StateJson);
+        state = state with { Skills = new Dictionary<string, string>(priorState.Skills) };
         state.Validate();
         var autonomous = nextWorld is not null;
         if (nextWorld is null)
@@ -119,6 +122,8 @@ public static class CampaignService
             var observed = nextWorld.Characters.Where(c => nextWorld.Entities.Single(e => e.Id == c.EntityId).LocationId == nextWorld.PlayerLocationId).Select(c => c.EntityId).Append("player").ToArray();
             nextWorld.Events.Add(new("narration-" + run.Id.ToString("N"), nextWorld.Events.Count, 0, "director", nextWorld.PlayerLocationId, narrative[..Math.Min(narrative.Length, 4000)], observed, [nextWorld.PlayerLocationId], state.Time, "narration"));
         }
+        CharacterService.Normalize(nextWorld, priorState, await db.Characters.Where(c => c.CampaignId == branch.CampaignId).ToArrayAsync(ct), sequence: current.Sequence + 2);
+        CharacterService.SyncPlayerSkills(nextWorld, state);
         var checkpoint = new Checkpoint { BranchId = branch.Id, Sequence = current.Sequence + 2, Label = autonomous ? "Story turn" : run.Provider == "fixture" ? "Simulated turn" : "Narrated turn", StateJson = Json.Write(state), WorldJson = Json.Write(nextWorld) };
         var assistantMessage = new Message { BranchId = branch.Id, Sequence = current.Sequence + 2, Content = narrative, Provider = run.Provider, Model = run.Model };
         db.Messages.AddRange(
