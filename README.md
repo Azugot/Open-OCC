@@ -8,7 +8,7 @@ Lemonade and DeepSeek model lists are detected automatically in provider setting
 
 Story cards include **Delete story** with a confirmation modal. Deletion removes all of that story's timelines, imports, graph history and memories together; reusable world definitions and other stories remain available. Active generation/import processing must finish or be cancelled first.
 
-Imports read connected sections with nearby context and a running summary, while preserving individual evidence links. Choose a model for each import, resume a saved stage, or start a fresh reconstruction from the unchanged original. Validation errors report the failing stage and reason. See [import and review](docs/imports.md).
+Imports preserve and preview a grouped document before inference. Models read connected blocks with nearby context and a running summary; approved claims populate Live world characters, graph, occurrences and scoped memories. Source history has a separate paginated reader with evidence links rather than hundreds of story messages. Choose a model per import, resume a saved stage, or reanalyze the unchanged original. See [import and review](docs/imports.md).
 
 ## Start with Docker
 

@@ -14,7 +14,9 @@ public record EngineSettings(string CharacterProfile = "fixture", string Directo
 }
 public record WorldEntity(string Id, string Name, string Kind, string LocationId, string Description, string[]? KnownTo = null);
 public record CharacterState(string EntityId, string Goal, string Belief, string Emotion, string Intention, string DecisionSummary, Dictionary<string, int> Stats);
-public record WorldEvent(string Id, int Order, int Beat, string ActorId, string LocationId, string Text, string[] PerceivedBy, string[] EntityIds, string Time, string Kind);
+public record SourceEvidence(Guid SourceId, Guid JobId, Guid SegmentId, int Ordinal, int StartOffset, int EndOffset);
+public record WorldEvent(string Id, int Order, int Beat, string ActorId, string LocationId, string Text, string[] PerceivedBy, string[] EntityIds, string Time, string Kind,
+    SourceEvidence[]? SourceEvidence = null);
 public record Connection(string Id, string SourceId, string TargetId, string Kind, string EvidenceEventId);
 public record MemoryEntry(string Id, string OwnerId, string Term, string Kind, string Text, bool Pinned, string[] EvidenceEventIds);
 public record Modifier(string Label, int Value);
@@ -137,6 +139,7 @@ public sealed class TurnDraft
 {
     public StoryWorld World { get; set; } = new();
     public List<DraftStep> Steps { get; set; } = [];
+    public Dictionary<string, string> ValidationFeedback { get; set; } = new();
     public Dictionary<string, DiceCheck> Rolls { get; set; } = new();
     public HashSet<string> Applied { get; set; } = [];
     public StoryState State { get; set; } = StoryState.Empty;

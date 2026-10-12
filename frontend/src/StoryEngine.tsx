@@ -13,6 +13,8 @@ import { api, post } from "./api";
 import type { Profiles, Workspace } from "./api";
 import "./engine.css";
 import ModelPicker from "./ModelPicker";
+import { TranscriptDrawer } from "./TranscriptViewer";
+import type { SourceEvidence } from "./TranscriptViewer";
 
 type Entity = {
   id: string;
@@ -32,6 +34,7 @@ type Occurrence = {
   entityIds: string[];
   time: string;
   kind: string;
+  sourceEvidence?: SourceEvidence[];
 };
 type Memory = {
   id: string;
@@ -131,6 +134,7 @@ export default function StoryEngine({
   const [selected, setSelected] = useState("");
   const [filters, setFilters] = useState(kinds);
   const [zoom, setZoom] = useState(1);
+  const [sourceEvidence, setSourceEvidence] = useState<SourceEvidence[] | null>(null);
   const request = useRef(0);
   const branch = workspace.branch.id;
   const historical = !!checkpoint && checkpoint !== workspace.checkpoint.id;
@@ -151,6 +155,7 @@ export default function StoryEngine({
   useEffect(() => {
     setData(null);
     setSelected("");
+    setSourceEvidence(null);
     setEditing(null);
     setSettings(null);
     void refresh();
@@ -417,6 +422,7 @@ export default function StoryEngine({
                   </div>
                   <p>{e.text}</p>
                   <span className="engine-badge">{e.kind}</span>
+                  <SourceEvidenceLinks citations={e.sourceEvidence} open={setSourceEvidence} />
                   {spoilers && (
                     <small>
                       Perceived by:{" "}
@@ -600,6 +606,7 @@ export default function StoryEngine({
                             View supporting occurrence
                           </button>
                         )}
+                        {visibleEventIds.has(c.evidenceEventId) && <SourceEvidenceLinks citations={committedEvents.find(e => e.id === c.evidenceEventId)?.sourceEvidence} open={setSourceEvidence} />}
                       </div>
                     ))}
                   <h4>Occurrence history</h4>
@@ -949,6 +956,21 @@ export default function StoryEngine({
           )}
         </>
       )}
+      {!!sourceEvidence?.length && <TranscriptDrawer sourceId={sourceEvidence[0].sourceId} jobId={sourceEvidence[0].jobId} citations={sourceEvidence} close={() => setSourceEvidence(null)} />}
     </section>
   );
+}
+
+function SourceEvidenceLinks({ citations, open }: { citations?: SourceEvidence[]; open: (citations: SourceEvidence[]) => void }) {
+  if (!citations?.length) return null;
+  const groups = new Map<string, SourceEvidence[]>();
+  for (const citation of citations) { const key = `${citation.sourceId}:${citation.jobId}`; groups.set(key, [...(groups.get(key) || []), citation]); }
+  return <div className="engine-actions">{[...groups].flatMap(([key, group]) => {
+    const ordinals = [...new Set(group.map(c => c.ordinal))]; const pages = [];
+    for (let offset = 0; offset < ordinals.length; offset += 64) {
+      const page = new Set(ordinals.slice(offset, offset + 64));
+      pages.push(<button key={`${key}:${offset}`} className="engine-evidence" onClick={() => open(group.filter(c => page.has(c.ordinal)))}>View original source · {page.size} {page.size === 1 ? "block" : "blocks"}{ordinals.length > 64 ? ` (set ${offset / 64 + 1})` : ""}</button>);
+    }
+    return pages;
+  })}</div>;
 }

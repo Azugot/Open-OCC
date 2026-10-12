@@ -152,7 +152,7 @@ export type Workspace = {
   }[];
   facts: Fact[];
   threads: Thread[];
-  runs: { id: string; status: string; error?: string; contextJson?: string }[];
+  runs: { id: string; status: string; action?: string; error?: string; contextJson?: string }[];
   world?: {
     world: { id: string; name: string; description: string };
     version: { id: string; version: number; authorInstructions: string };

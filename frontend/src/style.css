@@ -1092,6 +1092,24 @@ input[type="checkbox"] {
   flex-wrap: wrap;
 }
 /* Import reconstruction and source evidence */
+.transcript-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 0;
+  border-top: 1px solid #dce2d5;
+}
+.transcript-row small { display: block; margin-top: 6px; }
+.transcript-pagination { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 16px; }
+.source-block { margin: 24px 0; padding: 20px; border: 1px solid #dce2d5; border-radius: 12px; background: white; }
+.source-block small { display: block; margin-bottom: 12px; }
+.source-block .prose { white-space: pre-wrap; overflow-wrap: anywhere; }
+.transcript-drawer label { display: block; margin: 16px 0; }
+.transcript-drawer input { width: 100%; box-sizing: border-box; }
+.source-structure { padding: 12px 16px; background: #eef2e8; border-radius: 8px; margin-bottom: 16px; }
+.story-recovery { border-left: 4px solid #a78347; }
+.story-recovery h2 { font-size: 1.3rem; margin-top: 0; }
 .import-review label {
   display: block;
   margin: 12px 0;

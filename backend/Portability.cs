@@ -27,7 +27,8 @@ public sealed record PortableExport(
     List<ImportSection>? ImportSections = null,
     List<ImportProposal>? ImportProposals = null,
     List<ImportIssue>? ImportIssues = null,
-    List<ImportStageResult>? ImportResults = null);
+    List<ImportStageResult>? ImportResults = null,
+    List<ImportedHistory>? ImportedHistory = null);
 public sealed record PortableImportRequest(PortableExport Export, string? Name = null);
 
 public static class PortabilityService
@@ -60,16 +61,17 @@ public static class PortabilityService
         var mechanics = await db.Mechanics.AsNoTracking().Where(x => branchIds.Contains(x.BranchId)).ToListAsync(ct);
         var events = await db.Events.AsNoTracking().Where(x => branchIds.Contains(x.BranchId)).ToListAsync(ct);
         var summaries = await db.Summaries.AsNoTracking().Where(x => branchIds.Contains(x.BranchId)).ToListAsync(ct);
-        return new(3, campaign, branches, checkpoints, messages, runs, sources, jobs, segments, facts, evidence, corrections, threads, worlds, worldVersions, characters, relationships, knowledge, mechanics, events, summaries,
+        return new(4, campaign, branches, checkpoints, messages, runs, sources, jobs, segments, facts, evidence, corrections, threads, worlds, worldVersions, characters, relationships, knowledge, mechanics, events, summaries,
             await db.ImportSections.AsNoTracking().Where(x => jobIds.Contains(x.JobId)).ToListAsync(ct),
             await db.ImportProposals.AsNoTracking().Where(x => jobIds.Contains(x.JobId)).ToListAsync(ct),
             await db.ImportIssues.AsNoTracking().Where(x => jobIds.Contains(x.JobId)).ToListAsync(ct),
-            await db.ImportResults.AsNoTracking().Where(x => jobIds.Contains(x.JobId)).ToListAsync(ct));
+            await db.ImportResults.AsNoTracking().Where(x => jobIds.Contains(x.JobId)).ToListAsync(ct),
+            await db.ImportedHistory.AsNoTracking().Where(x => branchIds.Contains(x.BranchId)).ToListAsync(ct));
     }
 
     public static async Task<Branch> Import(StoryDb db, PortableExport portable, string? nameOverride, CancellationToken ct)
     {
-        if (portable.Version is not (1 or 2 or 3) || portable.Campaign is null || portable.Branches is null || portable.Checkpoints is null)
+        if (portable.Version is not (1 or 2 or 3 or 4) || portable.Campaign is null || portable.Branches is null || portable.Checkpoints is null)
             throw new InvalidOperationException("Unsupported or incomplete Open-OCC export.");
         var campaign = new Campaign { Name = string.IsNullOrWhiteSpace(nameOverride) ? portable.Campaign.Name : nameOverride.Trim() };
         CampaignService.RequireText(campaign.Name, 100, "Campaign name");
@@ -78,6 +80,22 @@ public static class PortabilityService
         var sourceMap = portable.Sources.ToDictionary(x => x.Id, _ => Guid.NewGuid());
         var jobMap = portable.Jobs.ToDictionary(x => x.Id, _ => Guid.NewGuid());
         var segmentMap = portable.Segments.ToDictionary(x => x.Id, _ => Guid.NewGuid());
+        string RemapEvidence(string json)
+        {
+            var root = System.Text.Json.Nodes.JsonNode.Parse(json);
+            void Visit(System.Text.Json.Nodes.JsonNode? node)
+            {
+                if (node is System.Text.Json.Nodes.JsonArray array) { foreach (var child in array) Visit(child); }
+                if (node is not System.Text.Json.Nodes.JsonObject obj) return;
+                foreach (var entry in obj.ToArray())
+                {
+                    var map = entry.Key switch { "sourceId" => sourceMap, "jobId" => jobMap, "segmentId" => segmentMap, _ => null };
+                    if (map is not null && entry.Value is System.Text.Json.Nodes.JsonValue value && value.TryGetValue<string>(out var id) && Guid.TryParse(id, out var old) && map.TryGetValue(old, out var mapped)) obj[entry.Key] = mapped.ToString();
+                    else Visit(entry.Value);
+                }
+            }
+            Visit(root); return root?.ToJsonString(Json.Options) ?? json;
+        }
         var factMap = portable.Facts.ToDictionary(x => x.Id, _ => Guid.NewGuid());
         var threadMap = portable.Threads.ToDictionary(x => x.Id, _ => Guid.NewGuid());
         var worlds = (portable.Worlds ?? []).Select(x => new World { Id = Guid.NewGuid(), Name = x.Name, Description = x.Description, CreatedAt = x.CreatedAt }).ToList();
@@ -86,11 +104,12 @@ public static class PortabilityService
         var worldVersionMap = (portable.WorldVersions ?? []).Zip(worldVersions).ToDictionary(x => x.First.Id, x => x.Second.Id);
         campaign.WorldVersionId = portable.Campaign.WorldVersionId is { } selected && worldVersionMap.TryGetValue(selected, out var mappedVersion) ? mappedVersion : null;
         var branches = portable.Branches.Select(x => new Branch { Id = branchMap[x.Id], CampaignId = campaign.Id, Name = x.Name, ParentBranchId = x.ParentBranchId is { } p && branchMap.TryGetValue(p, out var mappedParent) ? mappedParent : null, ForkCheckpointId = x.ForkCheckpointId is { } f && checkpointMap.TryGetValue(f, out var mappedFork) ? mappedFork : null, HeadCheckpointId = checkpointMap[x.HeadCheckpointId], Revision = x.Revision, CreatedAt = x.CreatedAt }).ToList();
-        var checkpoints = portable.Checkpoints.Select(x => new Checkpoint { Id = checkpointMap[x.Id], BranchId = branchMap[x.BranchId], Sequence = x.Sequence, Label = x.Label, StateJson = x.StateJson, WorldJson = x.WorldJson, CreatedAt = x.CreatedAt }).ToList();
-        var sourceRows = portable.Sources.Select(x => new ImportedSource { Id = sourceMap[x.Id], CampaignId = campaign.Id, FileName = x.FileName, Sha256 = x.Sha256, Bytes = x.Bytes, CreatedAt = x.CreatedAt }).ToList();
+        var checkpoints = portable.Checkpoints.Select(x => new Checkpoint { Id = checkpointMap[x.Id], BranchId = branchMap[x.BranchId], Sequence = x.Sequence, Label = x.Label, StateJson = x.StateJson, WorldJson = RemapEvidence(x.WorldJson), CreatedAt = x.CreatedAt }).ToList();
+        var sourceRows = portable.Sources.Select(x => new ImportedSource { Id = sourceMap[x.Id], CampaignId = campaign.Id, FileName = x.FileName, Sha256 = x.Sha256, Bytes = x.Bytes, NormalizedText = x.NormalizedText, StructureJson = x.StructureJson, CreatedAt = x.CreatedAt }).ToList();
         var jobs = portable.Jobs.Where(x => sourceMap.ContainsKey(x.SourceId) && branchMap.ContainsKey(x.BranchId)).Select(x => new ImportJob { Id = jobMap[x.Id], SourceId = sourceMap[x.SourceId], BranchId = branchMap[x.BranchId], ExpectedCheckpointId = checkpointMap.GetValueOrDefault(x.ExpectedCheckpointId), Status = x.Status is "processing" or "queued" ? "paused" : x.Status, Processed = x.Processed, Total = x.Total, Error = x.Error, Method = x.Method, Provider = x.Provider, Model = x.Model, ProposedStateJson = x.ProposedStateJson, ProposedThreadsJson = x.ProposedThreadsJson, Summary = x.Summary, InputTokens = x.InputTokens, OutputTokens = x.OutputTokens, AttemptCount = x.AttemptCount, CreatedAt = x.CreatedAt,
             Stage = x.Stage, StageCursor = x.StageCursor, ProposalRevision = x.ProposalRevision, Calls = x.Calls, MaxCalls = x.MaxCalls, InputCharacterLimit = x.InputCharacterLimit, OutputTokenLimit = x.OutputTokenLimit, ResumeJson = x.ResumeJson, ReviewCompleted = x.ReviewCompleted }).ToList();
-        var segments = portable.Segments.Where(x => jobMap.ContainsKey(x.JobId)).Select(x => new ImportSegment { Id = segmentMap[x.Id], JobId = jobMap[x.JobId], Ordinal = x.Ordinal, Speaker = x.Speaker, Text = x.Text, Section = x.Section, Timestamp = x.Timestamp, Artifact = x.Artifact }).ToList();
+        var segments = portable.Segments.Where(x => jobMap.ContainsKey(x.JobId)).Select(x => new ImportSegment { Id = segmentMap[x.Id], JobId = jobMap[x.JobId], Ordinal = x.Ordinal, Speaker = x.Speaker, Text = x.Text, Start = x.Start, Length = x.Length, Section = x.Section, Timestamp = x.Timestamp, Artifact = x.Artifact }).ToList();
+        var histories = (portable.ImportedHistory ?? []).Select(x => new ImportedHistory { BranchId = branchMap[x.BranchId], SourceId = sourceMap[x.SourceId], JobId = jobMap[x.JobId], EffectiveSequence = x.EffectiveSequence }).ToList();
         var proposalMap = (portable.ImportProposals ?? []).ToDictionary(x => x.Id, _ => Guid.NewGuid());
         var importSections = (portable.ImportSections ?? []).Where(x => jobMap.ContainsKey(x.JobId)).Select(x => new ImportSection { JobId = jobMap[x.JobId], Ordinal = x.Ordinal, Start = x.Start, End = x.End }).ToList();
         var proposals = (portable.ImportProposals ?? []).Where(x => jobMap.ContainsKey(x.JobId)).Select(x => new ImportProposal { Id = proposalMap[x.Id], JobId = jobMap[x.JobId], Key = x.Key, Category = x.Category, ContentJson = x.ContentJson, Revision = x.Revision, Current = x.Current, Excluded = x.Excluded }).ToList();
@@ -111,9 +130,10 @@ public static class PortabilityService
         var events = (portable.Events ?? []).Where(x => branchMap.ContainsKey(x.BranchId)).Select(x => new StoryEvent { Id = Guid.NewGuid(), BranchId = branchMap[x.BranchId], Sequence = x.Sequence, Type = x.Type, Summary = x.Summary, MessageId = null, CreatedAt = x.CreatedAt }).ToList();
         var summaries = (portable.Summaries ?? []).Where(x => branchMap.ContainsKey(x.BranchId)).Select(x => new CampaignSummary { Id = Guid.NewGuid(), BranchId = branchMap[x.BranchId], ThroughSequence = x.ThroughSequence, Text = x.Text, UpdatedAt = x.UpdatedAt }).ToList();
         var messages = portable.Messages.Where(x => branchMap.ContainsKey(x.BranchId)).Select(x => new Message { Id = Guid.NewGuid(), BranchId = branchMap[x.BranchId], Sequence = x.Sequence, Role = x.Role, Content = x.Content, Provider = x.Provider, Model = x.Model, CreatedAt = x.CreatedAt }).ToList();
-        var runs = portable.Runs.Where(x => branchMap.ContainsKey(x.BranchId)).Select(x => new GenerationRun { Id = Guid.NewGuid(), BranchId = branchMap[x.BranchId], ExpectedCheckpointId = checkpointMap.GetValueOrDefault(x.ExpectedCheckpointId), Action = x.Action, Status = x.Status == "running" ? x.DraftJson == "{}" ? "interrupted" : "paused" : x.Status, Provider = x.Provider, Model = x.Model, DraftJson = x.DraftJson, ContextJson = x.ContextJson, StateProposalJson = x.StateProposalJson, InputTokens = x.InputTokens, OutputTokens = x.OutputTokens, Error = x.Error, CreatedAt = x.CreatedAt }).ToList();
+        var runs = portable.Runs.Where(x => branchMap.ContainsKey(x.BranchId)).Select(x => new GenerationRun { Id = Guid.NewGuid(), BranchId = branchMap[x.BranchId], ExpectedCheckpointId = checkpointMap.GetValueOrDefault(x.ExpectedCheckpointId), Action = x.Action, Status = x.Status == "running" ? x.DraftJson == "{}" ? "interrupted" : "paused" : x.Status, Provider = x.Provider, Model = x.Model, DraftJson = RemapEvidence(x.DraftJson), ContextJson = RemapEvidence(x.ContextJson), StateProposalJson = x.StateProposalJson, InputTokens = x.InputTokens, OutputTokens = x.OutputTokens, Error = x.Error, CreatedAt = x.CreatedAt }).ToList();
         db.AddRange(campaign); db.AddRange(worlds); db.AddRange(worldVersions); db.AddRange(branches); db.AddRange(checkpoints); db.AddRange(messages); db.AddRange(runs); db.AddRange(sourceRows); db.AddRange(jobs); db.AddRange(segments); db.AddRange(facts); db.AddRange(evidence); db.AddRange(corrections); db.AddRange(threads); db.AddRange(characters); db.AddRange(relationships); db.AddRange(knowledge); db.AddRange(mechanics); db.AddRange(events); db.AddRange(summaries);
         db.AddRange(importSections); db.AddRange(proposals); db.AddRange(issues); db.AddRange(importResults);
+        db.AddRange(histories);
         await db.SaveChangesAsync(ct);
         return branches.OrderBy(x => x.CreatedAt).First();
     }

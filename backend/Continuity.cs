@@ -26,14 +26,14 @@ public sealed class ContinuityService
 
     public async Task<StoryContext> Assemble(StoryDb db, Guid branchId, StoryState state, string action, CancellationToken ct)
     {
-        var recentRows = await db.Messages.Where(x => x.BranchId == branchId).OrderByDescending(x => x.Sequence).Take(16).OrderBy(x => x.Sequence).ToArrayAsync(ct);
+        var recentRows = await db.Messages.Where(x => x.BranchId == branchId && x.Provider != "imported-source").OrderByDescending(x => x.Sequence).Take(16).OrderBy(x => x.Sequence).ToArrayAsync(ct);
         var recent = recentRows.Select(x => new ContextMessage(x.Role, x.Content)).ToArray();
         var facts = await db.Facts.Where(x => x.BranchId == branchId && x.ReviewStatus == "accepted").OrderByDescending(x => x.EffectiveSequence).Take(120).ToListAsync(ct);
         var words = Keywords(action + " " + state.Objective + " " + string.Join(' ', state.Participants));
         var relevant = facts.OrderByDescending(x => Score(x.Text, words) + (x.Kind is "promise" or "deadline" ? 10 : 0)).Take(35)
             .Select(x => new ContextFact(x.Text, x.Kind, x.Visibility, SafeKnownBy(x.KnownByJson), x.Confidence)).ToArray();
         var recentStart = recentRows.Length == 0 ? int.MaxValue : recentRows[0].Sequence;
-        var historicalRows = await db.Messages.Where(x => x.BranchId == branchId && x.Sequence < recentStart).OrderByDescending(x => x.Sequence).Take(200).ToArrayAsync(ct);
+        var historicalRows = await db.Messages.Where(x => x.BranchId == branchId && x.Provider != "imported-source" && x.Sequence < recentStart).OrderByDescending(x => x.Sequence).Take(200).ToArrayAsync(ct);
         var retrieved = historicalRows.OrderByDescending(x => Score(x.Content, words)).ThenByDescending(x => x.Sequence).Where(x => Score(x.Content, words) > 0).Take(8).Select(x => new ContextMessage(x.Role, x.Content)).ToArray();
         var threads = await db.NarrativeThreads.Where(x => x.BranchId == branchId && x.Status == "active").OrderByDescending(x => x.Importance).ThenByDescending(x => x.EffectiveSequence).Take(20)
             .Select(x => new ContextThread(x.Title, x.Details, x.Kind, x.Importance)).ToArrayAsync(ct);

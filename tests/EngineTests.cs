@@ -38,6 +38,37 @@ public class EngineTests : IAsyncLifetime
             return Task.FromResult(Json.Read<T>(Json.Write(transform?.Invoke(request) ?? request.Example)));
         }
     }
+    [Fact]
+    public async Task RoutineZeroDifficultyDoesNotRollOrBlockContinuation()
+    {
+        await using var db = Db(); var branch = await CampaignService.Create(db, new("Routine action", true), default);
+        var run = await Start(db, branch);
+        var model = new Agent(request => request.Task == "plan"
+            ? ((TurnPlan)request.Example) with { PlayerAttempt = new("Look around", false, 0, [], "Routine observation needs no roll.") }
+            : request.Example);
+        await StoryEngine.Execute(db, run, Config, default, model, model);
+        Assert.Equal("completed", run.Status);
+        Assert.Empty((await World(db, branch.Id)).Checks);
+        Assert.DoesNotContain("SIMULATED TURN", (await db.Messages.OrderBy(m => m.Sequence).LastAsync()).Content);
+        Assert.Throws<InvalidOperationException>(() => StoryEngine.ValidateAttempt(new("Force a lock", true, 0, [], "Uncertain action")));
+    }
+    [Fact]
+    public async Task RetrySuppliesFailedStepValidationFeedbackWithoutRepeatingSuccessfulSteps()
+    {
+        await using var db = Db(); var branch = await CampaignService.Create(db, new("Feedback retry", true), default);
+        var run = await Start(db, branch);
+        var model = new Agent(request => request.Task == "plan" && !(request.Instructions ?? "").Contains("Previous response failed validation")
+            ? ((TurnPlan)request.Example) with { ActorIds = ["player"] }
+            : request.Example);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => StoryEngine.Execute(db, run, Config, default, model, model));
+        var saved = await db.GenerationRuns.SingleAsync(r => r.Id == run.Id);
+        Assert.Equal("paused", saved.Status);
+        Assert.Contains("NPC", Json.Read<TurnDraft>(saved.DraftJson).ValidationFeedback["plan"]);
+        await StoryEngine.Execute(db, saved, Config, default, model, model);
+        Assert.Equal("completed", saved.Status);
+        Assert.Contains(model.Requests, r => r.Task == "plan" && (r.Instructions ?? "").Contains("Previous response failed validation"));
+        Assert.Empty(Json.Read<TurnDraft>(saved.DraftJson).ValidationFeedback);
+    }
 
     [Fact]
     public async Task CharactersReactInOrderWithoutReadingOtherSecrets()

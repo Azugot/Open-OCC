@@ -579,6 +579,9 @@ namespace Story.Api.Migrations
                     b.Property<Guid>("JobId")
                         .HasColumnType("uuid");
 
+                    b.Property<int>("Length")
+                        .HasColumnType("integer");
+
                     b.Property<int>("Ordinal")
                         .HasColumnType("integer");
 
@@ -589,6 +592,9 @@ namespace Story.Api.Migrations
                     b.Property<string>("Speaker")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<int>("Start")
+                        .HasColumnType("integer");
 
                     b.Property<string>("Text")
                         .IsRequired()
@@ -647,6 +653,38 @@ namespace Story.Api.Migrations
                     b.ToTable("ImportResults");
                 });
 
+            modelBuilder.Entity("Story.ImportedHistory", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BranchId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("EffectiveSequence")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("JobId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("SourceId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("JobId");
+
+                    b.HasIndex("SourceId");
+
+                    b.HasIndex("BranchId", "EffectiveSequence");
+
+                    b.HasIndex("BranchId", "JobId")
+                        .IsUnique();
+
+                    b.ToTable("ImportedHistory");
+                });
+
             modelBuilder.Entity("Story.ImportedSource", b =>
                 {
                     b.Property<Guid>("Id")
@@ -667,7 +705,15 @@ namespace Story.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("NormalizedText")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("StructureJson")
                         .IsRequired()
                         .HasColumnType("text");
 
@@ -1149,6 +1195,27 @@ namespace Story.Api.Migrations
                     b.HasOne("Story.ImportJob", null)
                         .WithMany()
                         .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Story.ImportedHistory", b =>
+                {
+                    b.HasOne("Story.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Story.ImportJob", null)
+                        .WithMany()
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Story.ImportedSource", null)
+                        .WithMany()
+                        .HasForeignKey("SourceId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
