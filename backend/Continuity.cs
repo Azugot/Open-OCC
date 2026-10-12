@@ -6,7 +6,7 @@ namespace Story;
 public record ContextFact(string Text, string Kind, string Visibility, string[] KnownBy, double Confidence);
 public record ContextMessage(string Role, string Content);
 public record ContextThread(string Title, string Details, string Kind, int Importance);
-public record StoryContext(StoryState State, ContextMessage[] RecentMessages, ContextFact[] RelevantFacts, ContextThread[] ActiveThreads, ContextMessage[] RetrievedMessages = null!, string? Summary = null);
+public record StoryContext(StoryState State, ContextMessage[] RecentMessages, ContextFact[] RelevantFacts, ContextThread[] ActiveThreads, ContextMessage[] RetrievedMessages = null!, string? Summary = null, CampaignGuidance? Guidance = null, object[]? Capabilities = null, object[]? CharacterProfiles = null, CharacterRelationshipChange[]? Relationships = null);
 public record TransitionFact(string Text, string Kind, string Visibility, string[] KnownBy, double Confidence);
 public record TransitionThread(string Title, string Details, string Kind, string Status, int Importance);
 public record StateTransition(StoryState? State, TransitionFact[] Facts, TransitionThread[] Threads);
@@ -38,12 +38,19 @@ public sealed class ContinuityService
         var threads = await db.NarrativeThreads.Where(x => x.BranchId == branchId && x.Status == "active").OrderByDescending(x => x.Importance).ThenByDescending(x => x.EffectiveSequence).Take(20)
             .Select(x => new ContextThread(x.Title, x.Details, x.Kind, x.Importance)).ToArrayAsync(ct);
         var summary = await db.Summaries.Where(x => x.BranchId == branchId).Select(x => x.Text).SingleOrDefaultAsync(ct);
-        return new(state, recent, relevant, threads, retrieved, summary);
+        var campaign = await db.Branches.Where(x => x.Id == branchId).Join(db.Campaigns, b => b.CampaignId, c => c.Id, (b, c) => c).SingleAsync(ct);
+        var branch = await db.Branches.SingleAsync(b => b.Id == branchId, ct);
+        var world = StoryWorld.From(await db.Checkpoints.SingleAsync(c => c.Id == branch.HeadCheckpointId, ct));
+        CharacterService.Normalize(world, state);
+        var known = CharacterService.KnownEntities(world);
+        return new(state, recent, relevant, threads, retrieved, summary, CampaignGuidance.From(campaign), CharacterService.CapabilityContext(world, "player"),
+            world.CharacterProfiles.Where(p => known.Contains(p.EntityId)).Select(p => (object)new { p.EntityId, Name = world.Entities.Single(e => e.Id == p.EntityId).Name, Description = world.Entities.Single(e => e.Id == p.EntityId).Description, p.Role, p.Appearance, p.Personality, p.SpeakingStyle, p.Aliases }).ToArray(),
+            CharacterService.RelationshipContext(world, "player"));
     }
 
     public static ProviderPrompt NarrationPrompt(StoryContext context, string action) => new(
-        "You are the narrator and game master of a persistent interactive story. Preserve player agency: never invent the player's actions, speech, thoughts, feelings, or decisions. Continue from the exact current state. Treat rumors and beliefs as uncertain. A fact marked narrator is secret; do not reveal it through an NPC unless that NPC appears in knownBy. Keep promises, deadlines, objectives, inventory, time, location, and character knowledge coherent. Write a vivid scene and stop at a meaningful decision. Do not output JSON or a state panel.",
-        "CONTINUITY CONTEXT:\n" + Json.Write(context) + "\n\nPLAYER ACTION:\n" + action, 1800);
+        "You are the narrator and game master of a persistent interactive story. Preserve player agency: never invent the player's actions, speech, thoughts, feelings, or decisions. Continue from the exact current state. Treat rumors and beliefs as uncertain. A fact marked narrator is secret; do not reveal it through an NPC unless that NPC appears in knownBy. Keep promises, deadlines, objectives, inventory, time, location, and character knowledge coherent. Write a vivid scene and stop at a meaningful decision. Do not output JSON or a state panel." + (context.Guidance?.Prompt ?? "") + "\nNarrator mode resolves actions narratively without server dice regardless of the campaign toggle.",
+        "CONTINUITY CONTEXT:\n" + Json.Write(context with { Guidance = null }) + "\nCapabilities and proficiency ranks are author-managed. Respect their limitations; do not grant new capabilities or advance ranks.\n\nPLAYER ACTION:\n" + action, 1800);
 
     public static string ValidateNarrative(string narrative)
     {
@@ -57,8 +64,8 @@ public sealed class ContinuityService
     {
         if (provider is FixtureProvider) return new(null, [], []);
         var prompt = new ProviderPrompt(
-            "You are a continuity validator. Return JSON only. Propose the complete post-turn state, new durable facts, and thread updates supported by the player action and narrative. Keep the old value when evidence is absent. Rumors and beliefs are not facts. Secrets are narrator-only and list only characters that actually learned them. Inventory/skill changes require explicit support in the action or narrative.",
-            "BEFORE:\n" + Json.Write(context) + "\n\nPLAYER ACTION:\n" + action + "\n\nNARRATIVE:\n" + narrative, 1800);
+            "You are a continuity validator. Return JSON only. Propose the complete post-turn state, new durable facts, and thread updates supported by the player action and narrative. Keep the old value when evidence is absent. Rumors and beliefs are not facts. Secrets are narrator-only and list only characters that actually learned them. Inventory changes require explicit support in the action or narrative. Keep every skill and proficiency rank unchanged; only author edits or reviewed imports can change capabilities.",
+            "BEFORE:\n" + Json.Write(context with { Guidance = null }) + "\n\nPLAYER ACTION:\n" + action + "\n\nNARRATIVE:\n" + narrative, 1800);
         return (await CompleteValidatedWithUsage<StateTransition>(provider, prompt, TransitionSchema, value =>
         {
             var validated = ValidateTransition(value);

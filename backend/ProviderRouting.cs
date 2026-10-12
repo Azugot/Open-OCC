@@ -8,6 +8,19 @@ public sealed class ProviderRouting(ProviderFactory factory, IConfiguration conf
 {
     public static readonly string[] Tasks = ["narration", "reconstruction", "memory"];
 
+    // Reading a source needs selection metadata, not an operational provider or credentials.
+    public async Task<(string Provider, string Model)> Capture(StoryDb db, string? provider, string? model, CancellationToken ct)
+    {
+        var selected = string.IsNullOrWhiteSpace(provider) ? (await Read(db, ct))["reconstruction"] : provider;
+        var profile = await db.Providers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == selected, ct);
+        var effective = model;
+        if (string.IsNullOrWhiteSpace(effective) && string.IsNullOrWhiteSpace(provider)) effective = (await ReadModels(db, ct))["reconstruction"];
+        if (string.IsNullOrWhiteSpace(effective)) effective = profile?.Model ?? "";
+        if (selected.Length > 100 || effective.Length > 200 || selected.Any(char.IsControl) || effective.Any(char.IsControl))
+            throw new InvalidOperationException("Provider/model identifiers exceed their allowed bounds.");
+        return (selected, effective);
+    }
+
     public async Task<RoutedProvider> Resolve(StoryDb db, string task, CancellationToken ct)
     {
         if (!Tasks.Contains(task)) throw new InvalidOperationException("Unknown provider task.");

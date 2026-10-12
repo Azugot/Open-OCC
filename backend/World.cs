@@ -14,6 +14,14 @@ public record EngineSettings(string CharacterProfile = "fixture", string Directo
 }
 public record WorldEntity(string Id, string Name, string Kind, string LocationId, string Description, string[]? KnownTo = null);
 public record CharacterState(string EntityId, string Goal, string Belief, string Emotion, string Intention, string DecisionSummary, Dictionary<string, int> Stats);
+public record CharacterProfile(string EntityId, string Role = "NPC", string Appearance = "", string Personality = "", string SpeakingStyle = "",
+    string[]? Aliases = null, string Guidance = "", string Status = "active", Guid? CampaignCharacterId = null,
+    string Goal = "", string Belief = "", string Emotion = "", string Intention = "");
+public record CharacterCapability(string Id, string OwnerId, string Category, string Name, string Description = "", string Rank = "",
+    string Limitations = "", bool Active = true, string[]? KnownTo = null, SourceEvidence[]? SourceEvidence = null);
+public record CharacterRelationshipChange(string Id, string RelationshipId, string FromId, string ToId, string Type, string Label,
+    int? Score, string Reason, string Time, int Sequence, bool Active = true, string? PreviousLabel = null, int? PreviousScore = null,
+    string? EvidenceEventId = null, string[]? KnownTo = null, bool Baseline = false);
 public record SourceEvidence(Guid SourceId, Guid JobId, Guid SegmentId, int Ordinal, int StartOffset, int EndOffset);
 public record WorldEvent(string Id, int Order, int Beat, string ActorId, string LocationId, string Text, string[] PerceivedBy, string[] EntityIds, string Time, string Kind,
     SourceEvidence[]? SourceEvidence = null);
@@ -27,6 +35,9 @@ public sealed class StoryWorld
 {
     public List<WorldEntity> Entities { get; set; } = [];
     public List<CharacterState> Characters { get; set; } = [];
+    public List<CharacterProfile> CharacterProfiles { get; set; } = [];
+    public List<CharacterCapability> Capabilities { get; set; } = [];
+    public List<CharacterRelationshipChange> RelationshipHistory { get; set; } = [];
     public List<WorldEvent> Events { get; set; } = [];
     public List<Connection> Connections { get; set; } = [];
     public List<MemoryEntry> Memories { get; set; } = [];
@@ -137,6 +148,7 @@ public record NarrativeReply(string Narrative);
 public record DraftStep(string Key, string Task, string ResultJson, DateTime CompletedAt);
 public sealed class TurnDraft
 {
+    public CampaignGuidance? Guidance { get; set; }
     public StoryWorld World { get; set; } = new();
     public List<DraftStep> Steps { get; set; } = [];
     public Dictionary<string, string> ValidationFeedback { get; set; } = new();

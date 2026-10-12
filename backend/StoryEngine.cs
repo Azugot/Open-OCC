@@ -24,6 +24,7 @@ public static class StoryEngine
         foreach (var run in await db.GenerationRuns.Where(x => x.Status == "running").ToListAsync(ct))
         {
             run.Status = "paused";
+            GenerationProgress.Stop(run);
             run.Error = "Application restarted. Retry to resume saved steps and rolls; no partial turn was committed.";
         }
         await db.SaveChangesAsync(ct);
@@ -62,7 +63,8 @@ public static class StoryEngine
         var scene = w.Entities.Where(x => x.Id == actorId ||
             ((x.KnownTo is null || x.KnownTo.Contains(actorId)) && ((!string.IsNullOrEmpty(actor.LocationId) && x.LocationId == actor.LocationId) || known.Contains(x.Id) || x.Id == actor.LocationId))).Take(40)
             .Select(x => x.LocationId == actor.LocationId || x.Id == actor.LocationId ? x : x with { LocationId = "", Description = "Previously encountered; current whereabouts unknown." }).ToArray();
-        return new { actor, character = w.Characters.Single(x => x.EntityId == actorId), entities = scene, recentEvents = events,
+        return new { actor, character = w.Characters.Single(x => x.EntityId == actorId), profile = w.CharacterProfiles.SingleOrDefault(p => p.EntityId == actorId), capabilities = CharacterService.CapabilityContext(w, actorId), entities = scene, recentEvents = events,
+            relationships = CharacterService.RelationshipContext(w, actorId),
             memories = RetrieveMemories(w, actorId, string.Join(" ", events.TakeLast(3).Select(x => x.Text))),
             commonFacts = publicFacts.Take(20).Select(x => x[..Math.Min(x.Length, 1000)]),
             privateKnowledge = (privateKnowledge ?? []).Take(20).Select(x => x[..Math.Min(x.Length, 1000)]), timeMinutes = w.TimeMinutes };
@@ -97,6 +99,7 @@ public static class StoryEngine
         var words = query.Split([' ', ',', '.', '\n'], StringSplitOptions.RemoveEmptyEntries).Where(x => x.Length > 3).Take(50).ToHashSet(StringComparer.OrdinalIgnoreCase);
         return new {
             entities, characters = w.Characters.OrderBy(x => entityPriority.GetValueOrDefault(x.EntityId, int.MaxValue)).Take(30),
+            characterProfiles = w.CharacterProfiles, capabilities = CharacterService.CapabilityContext(w, "director"), relationships = CharacterService.RelationshipContext(w, "director"),
             allowedActors = w.Characters.OrderBy(x => entityPriority.GetValueOrDefault(x.EntityId, int.MaxValue)).Take(30)
                 .Select(c => { var e = w.Entities.Single(x => x.Id == c.EntityId); return new { id = e.Id, e.Name, e.LocationId, inCurrentScene = e.LocationId != "" && e.LocationId == w.PlayerLocationId }; }),
             w.PlayerLocationId, w.TimeMinutes, playerState, recentEvents = recent, memories = RetrieveMemories(w, "director", query),
@@ -119,18 +122,23 @@ public static class StoryEngine
             if (branch.HeadCheckpointId != run.ExpectedCheckpointId) throw new DbUpdateConcurrencyException();
             var cp = await db.Checkpoints.SingleAsync(x => x.Id == run.ExpectedCheckpointId, ct);
             var draft = run.DraftJson == "{}" ? new TurnDraft { World = StoryWorld.From(cp), State = Json.Read<StoryState>(cp.StateJson) } : Json.Read<TurnDraft>(run.DraftJson);
+            var campaign = await db.Campaigns.SingleAsync(x => x.Id == branch.CampaignId, ct);
+            // Legacy saved turns began before campaign guidance existed: preserve their original defaults.
+            draft.Guidance ??= run.DraftJson == "{}" ? CampaignGuidance.From(campaign) : new CampaignGuidance();
             var w = draft.World;
             w.Settings.Validate();
+            var resuming = run.Status == "paused";
             run.Status = "running"; run.Error = null;
+            GenerationProgress.Set(run, "autonomous", resuming ? "resuming" : "preparing", restart: resuming);
             await Save();
             var character = characterOverride ?? await Provider(w.Settings.CharacterProfile, w.Settings.CharacterModel);
             var director = directorOverride ?? await Provider(w.Settings.DirectorProfile, w.Settings.DirectorModel);
             var facts = await db.Facts.Where(x => x.BranchId == run.BranchId && x.ReviewStatus == "accepted" && x.EffectiveSequence <= cp.Sequence)
                 .OrderByDescending(x => x.EffectiveSequence).ToListAsync(ct);
             var allFacts = facts.Select(x => $"[{x.Kind}; confidence {x.Confidence}; known by {x.KnownByJson}] {x.Text}").ToArray();
-            var campaign = await db.Campaigns.SingleAsync(x => x.Id == branch.CampaignId, ct);
             var version = campaign.WorldVersionId is { } versionId ? await db.WorldVersions.SingleAsync(x => x.Id == versionId, ct) : null;
             var people = await db.Characters.Where(x => x.CampaignId == branch.CampaignId).ToListAsync(ct);
+            CharacterService.Normalize(w, draft.State, people, sequence: cp.Sequence);
             var knowledge = await db.Knowledge.Where(x => x.BranchId == branch.Id && x.EffectiveSequence <= cp.Sequence).ToListAsync(ct);
             var threads = await db.NarrativeThreads.Where(x => x.BranchId == branch.Id && x.EffectiveSequence <= cp.Sequence && x.Status == "active")
                 .OrderByDescending(x => x.Importance).Take(20).Select(x => new ContextThread(x.Title, x.Details, x.Kind, x.Importance)).ToArrayAsync(ct);
@@ -184,9 +192,9 @@ public static class StoryEngine
                     if (offscreen && (plan.AdvanceMinutes == 0 || beat > 1)) continue;
                     if (!offscreen && entity.LocationId != w.PlayerLocationId) continue;
                     var current = w.Characters.Single(x => x.EntityId == actorId);
-                    var person = people.SingleOrDefault(x => x.Name.Equals(entity.Name, StringComparison.OrdinalIgnoreCase));
+                    var person = people.SingleOrDefault(x => x.Id == w.CharacterProfiles.SingleOrDefault(p => p.EntityId == actorId)?.CampaignCharacterId);
                     var ownKnowledge = knowledge.Where(x => x.CharacterId == person?.Id).Select(x => $"[{x.BeliefType}; confidence {x.Confidence}] {x.Subject}").ToArray();
-                    var proposal = await Step(key + "-proposal", "character", character, CharacterContext(w, actorId, PerceivedFacts(facts, entity.Name), ownKnowledge),
+                    var proposal = await Step(key + "-proposal", "character", character, CharacterContext(w, actorId, PerceivedFacts(facts, person?.Name ?? entity.Name), ownKnowledge),
                         new CharacterProposal(entity.Kind == "being" ? "" : actorId == "clerk" ? "Please present your application." : actorId == "guard" ? "The sealed wing requires permission." : "What would you like to do next?",
                             current.Intention, "scene", [], current.Goal, current.Belief, current.Emotion, current.Intention,
                             "Respond to the observed situation while pursuing my goal."), p => ValidateProposal(w, actorId, p));
@@ -226,6 +234,7 @@ public static class StoryEngine
             await db.Entry(branch).ReloadAsync(ct);
             await db.Entry(run).ReloadAsync(ct);
             if (run.Status != "running") throw new OperationCanceledException("Turn was cancelled.");
+            GenerationProgress.Set(run, "autonomous", "saving"); await Save();
             await CampaignService.CommitTurn(db, run, narration.Narrative, ct, draft.State, w);
 
             async Task<IAgentProvider> Provider(string id, string? model)
@@ -248,7 +257,9 @@ public static class StoryEngine
             {
                 var existing = draft.Steps.SingleOrDefault(x => x.Key == key);
                 if (existing is not null) return Json.Read<T>(existing.ResultJson);
-                var instructions = Instructions(task) + (draft.ValidationFeedback.TryGetValue(key, out var feedback)
+                var phase = task switch { "plan" => "director-planning", "character" => "cast-deciding", "assess" => "director-assessing", "resolve" => "director-resolving", "narrate" => "narrating", _ => "preparing" };
+                GenerationProgress.Set(run, "autonomous", phase); await Save();
+                var instructions = Instructions(task) + "\nRespect supplied character profiles, capability ranks and limitations. Capabilities are author-managed; never grant powers or advance proficiency ranks." + draft.Guidance.Prompt + (draft.ValidationFeedback.TryGetValue(key, out var feedback)
                     ? "\nPrevious response failed validation: " + feedback + " Regenerate this task using only supplied IDs and the required fields/types." : "");
                 try
                 {
@@ -267,7 +278,7 @@ public static class StoryEngine
             }
             async Task<DiceCheck?> Check(string key, string actor, Attempt attempt)
             {
-                if (!attempt.Uncertain) return null;
+                if (!draft.Guidance.RollModeEnabled || !attempt.Uncertain) return null;
                 if (!draft.Rolls.TryGetValue(key, out var check))
                 {
                     check = Roll(key, actor, attempt); draft.Rolls.Add(key, check); w.Checks.Add(check); await Save();
@@ -290,6 +301,7 @@ public static class StoryEngine
                     : ex is InvalidOperationException && (ex.Message.StartsWith("Invalid ") || ex.Message.StartsWith("Unknown ") || ex.Message.StartsWith("Director selected") || ex.Message.StartsWith("Recipients must") || ex.Message.StartsWith("A private proposal") || ex.Message.StartsWith("A directed proposal") || ex.Message.StartsWith("A failed check"))
                         ? "Generation paused: " + ex.Message + " Validated steps and rolls are preserved."
                     : "Generation paused. Check provider settings and retry; validated steps and rolls are preserved.";
+                GenerationProgress.Stop(saved);
                 await db.SaveChangesAsync(CancellationToken.None);
             }
             // Cancellation may win between the pre-save check and EF's concurrency-token update.

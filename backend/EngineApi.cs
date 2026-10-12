@@ -73,19 +73,23 @@ public static class EngineApi
             var run = await db.GenerationRuns.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException();
             if (run.Status is not ("running" or "paused")) throw new InvalidOperationException("This draft cannot be cancelled.");
             run.Status = "cancelled"; run.Error = "Cancelled. No partial turn was committed.";
+            GenerationProgress.Stop(run);
             await db.SaveChangesAsync(ct); StoryEngine.Cancel(run.Id); return Results.NoContent();
         });
     }
 
     public static async Task Edit(StoryDb db, Guid branchId, Guid expected, string label, Action<StoryWorld> change, CancellationToken ct)
+        => await EditState(db, branchId, expected, label, (world, state) => { change(world); return state; }, ct);
+
+    public static async Task EditState(StoryDb db, Guid branchId, Guid expected, string label, Func<StoryWorld, StoryState, StoryState> change, CancellationToken ct)
     {
         var branch = await db.Branches.SingleOrDefaultAsync(x => x.Id == branchId, ct) ?? throw new KeyNotFoundException();
         if (branch.HeadCheckpointId != expected) throw new DbUpdateConcurrencyException();
         if (await db.GenerationRuns.AnyAsync(x => x.BranchId == branchId && (x.Status == "running" || x.Status == "paused"), ct))
             throw new InvalidOperationException("Cancel or finish the active draft before editing this branch.");
         var head = await db.Checkpoints.SingleAsync(x => x.Id == expected, ct);
-        var world = StoryWorld.From(head); change(world);
-        var checkpoint = new Checkpoint { BranchId = branchId, Sequence = head.Sequence + 1, Label = label, StateJson = head.StateJson, WorldJson = Json.Write(world) };
+        var world = StoryWorld.From(head); var state = change(world, Json.Read<StoryState>(head.StateJson)); state.Validate();
+        var checkpoint = new Checkpoint { BranchId = branchId, Sequence = head.Sequence + 1, Label = label, StateJson = Json.Write(state), WorldJson = Json.Write(world) };
         db.Checkpoints.Add(checkpoint);
         // No private memory contents are written into the public message history.
         db.Messages.Add(new Message { BranchId = branchId, Sequence = checkpoint.Sequence, Role = "system", Content = label, Provider = "author", Model = "manual" });

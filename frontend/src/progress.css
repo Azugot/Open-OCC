@@ -1,0 +1,9 @@
+.generation-progress { border: 1px solid var(--border, #dce2d5); border-radius: 14px; background: var(--surface, #fafbf7); padding: 18px 22px; margin: 18px 0; overflow-wrap: anywhere; }
+.generation-progress-heading { display: flex; gap: 12px; align-items: center; }
+.activity-spinner { width: 18px; height: 18px; flex: 0 0 18px; border: 2px solid #dce2d5; border-top-color: #526848; border-radius: 50%; }
+.generation-progress.is-active .activity-spinner { animation: activity-spin 1.1s linear infinite; }
+.activity-message p { margin: 12px 0 6px; line-height: 1.65; }
+.activity-message small { color: #65705f; font-variant-numeric: tabular-nums; }
+@keyframes activity-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .generation-progress.is-active .activity-spinner, .reconstruction-progress .progress-pulse, .reconstruction-progress progress { animation: none !important; } }
+@media (max-width: 700px) { .generation-progress { padding: 16px; } }

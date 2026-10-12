@@ -1,3 +1,4 @@
+export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 export async function api<T>(
   path: string,
   options: RequestInit = {},
@@ -12,10 +13,7 @@ export async function api<T>(
   const response = await fetch(`/api${path}`, { ...options, headers });
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
-    throw new Error(
-      payload?.error ||
-        `Request failed (${response.status}). Check that the backend is running.`,
-    );
+    throw new ApiError(payload?.error || `Request failed (${response.status}). Check that the backend is running.`, response.status);
   }
   return response.status === 204 ? (undefined as T) : response.json();
 }
@@ -30,6 +28,7 @@ export async function streamTurn(
   value: unknown,
   onDelta: (text: string) => void,
   signal: AbortSignal,
+  onEvent?: (event: TurnStreamEvent) => void,
 ) {
   const headers = new Headers({
     "Content-Type": "application/json",
@@ -59,12 +58,15 @@ export async function streamTurn(
     for (const line of lines) {
       if (!line.trim()) continue;
       const event = JSON.parse(line);
+      onEvent?.(event);
       if (event.type === "delta") onDelta(event.text);
       if (event.type === "error") throw new Error(event.error);
     }
     if (done) break;
   }
 }
+export type GenerationProgressData = { runId: string; status: string; mode: string; phase: string; startedAt: string; phaseStartedAt: string; updatedAt: string; asOf: string };
+export type TurnStreamEvent = { type: string; runId?: string; progress?: GenerationProgressData; checkpointId?: string };
 export async function downloadSource(id: string, name: string) {
   const headers = new Headers();
   const token = sessionStorage.getItem("occ-token");
@@ -99,6 +101,8 @@ export type Branch = {
   headCheckpointId: string;
 };
 export type Campaign = {
+  rollModeEnabled: boolean;
+  generalInstructions: string;
   id: string;
   name: string;
   createdAt: string;
@@ -191,6 +195,10 @@ export type Workspace = {
   summary?: { text: string; throughSequence: number } | null;
 };
 export type Job = {
+  branchId: string;
+  createdAt?: string;
+  fileName?: string;
+  timelineName?: string;
   id: string;
   sourceId: string;
   status: string;

@@ -12,7 +12,19 @@ The original file is stored unchanged with its SHA-256 before reconstruction. Mo
 
 Symbol-only fragments are marked as possible artifacts and remain visible as evidence. Heading and speaker labels are hints, not proof of a message boundary. A paragraph never automatically becomes a campaign fact.
 
-## Durable reconstruction
+## Guided import flow
+
+The four steps are **Source → Reconstruct → Review → Continue**. From the library, **Bring your story** creates an empty campaign and opens Source directly. Within an existing campaign, Source defaults to a **New timeline** forked from the selected checkpoint; **Current timeline** is an explicit alternative. The campaign and destination stay visible throughout review.
+
+Source validates the filename, extension, and size before uploading. Preparation preserves the original without needing credentials or an operational model. Expected JSON, document, and decoding failures stop the saved job with a useful error; the original remains downloadable. Fix the file and upload a new source, or retry preparation if appropriate. No incomplete normalized evidence is retained.
+
+Reconstruct shows one effective provider/model choice and excludes fixture adapters. Budget controls remain under **Advanced**, with existing defaults. Start validates the model before inference. Reanalysis first prepares a fresh job from the preserved source and uses the same selection and budget controls. A changed destination offers a fork from the original checkpoint with fresh reconstruction; the previous draft remains available.
+
+Review opens with remaining blockers and the final scene. **Needs attention**, **All proposals**, and **Final scene** provide focused views. Inventory quantities, skill ranks, and other categories have specific controls; stable keys and full JSON remain under Advanced. Approval is explicit, and clear proposals are included by default.
+
+Editors keep local corrections when saved server data refreshes. Saves are serialized, obsolete reads are cancelled or ignored, and overlapping edits require comparison before resubmission. Changing views, filters, pages, or workspace prompts **Save / Discard / Stay** when edits are pending. Reloading warns through the browser. Legacy review edits use explicit browser-session Save and remain local until approval.
+
+## Reconstruction stages
 
 New jobs use `agent-v3` and stages `normalize → extract → reconcile → resume → audit → repair → complete`. The UI preserves and prepares the file before any model call, shows its structure and grouped source preview, then offers **Start reconstruction**. Status includes `preparing` and `prepared` as well as `queued`, `processing`, `paused`, `review`, `approved`, and `cancelled`.
 
@@ -25,15 +37,19 @@ The original file and one immutable normalized document are stored separately fr
 - Resume reconstruction uses the evolving state and ending passages to recover the final scene, latest action, and whether a narrator response is pending.
 - A separate audit pass checks claims and the resume against supplied evidence. One targeted repair pass can propose changes; blocking issues still require human resolution or acknowledgment.
 
-All passes use the captured reconstruction provider/model. Structured output and evidence ordinals are validated locally, including for Lemonade. Output instructions include a concrete JSON example and enums. Literal newlines, tabs and carriage returns inside JSON strings are escaped without changing their text; truncated objects, wrong field types and unsupported claims still fail validation. A repair receives the specific validator error. After one repair attempt, malformed output pauses the stage and reports the stage and reason. Raw passages never become fallback facts. Fixture mode preserves and normalizes the source, then pauses for a configured model.
+All passes use the captured reconstruction provider/model. Structured output and evidence ordinals are validated locally, including for Lemonade. Output instructions include a concrete entity JSON example and enums. Entity claims require an established nonblank subject and a supported nonnull `entityKind` in both the generation schema and local validation; other categories retain optional entity metadata for older results. Literal newlines, tabs and carriage returns inside JSON strings are escaped without changing their text; truncated objects, wrong field types and unsupported claims still fail validation.
+
+Repairs receive claim indexes, stable keys, specific field failures, and the rejected response when it fits. Skill values must be plain strings (for example, `"Magic Talent": "F · 2/5"`); inventory values must be integer counts. State-map errors identify the exact field, expected shape, and received type before typed deserialization. For larger results, exact rejected claims or state fields are supplied instead; malformed JSON can use a clearly labeled bounded excerpt. Source evidence is retained, and repeated contextual ledger details can be reduced to stable keys to fit the captured input limit. Missing entity names or kinds must become explicit uncertainty, never guessed data. If exact feedback cannot fit, processing stops before sending or counting a repair request. After one sent repair attempt, invalid output pauses the stage and reports the stage and reason. Raw passages never become fallback facts. Fixture mode preserves and normalizes the source, then pauses for a configured model.
 
 Each validated stage result, draft revision, coverage checkpoint, and usage saves together. Worker claims use concurrency checks; leases renew every 20 seconds and expire after two minutes. Cancellation or lost ownership prevents late results from committing. Retry continues at the incomplete stage. A remote call interrupted before persistence may be repeated and billed again.
 
 Budgets default to 24,000 input characters including instructions/schema/context, 3,000 output tokens, and 100 calls. Limits are adjustable before upload and on retry. Calls include repair attempts. Budget exhaustion pauses processing. Reported tokens are shown where available; monetary costs are not invented.
 
+During reconstruction, the progress bar covers reading, reconciliation, final-scene recovery, evidence checks, and targeted correction. Reading every source block completes only the first stage. The panel shows completed review batches, the current activity (including validation repairs), and the elapsed model-request time. Overall percentage uses estimated stage weights and reaches 100% only when the draft reaches review. A rough completion range appears after at least two recorded request durations and a usable batch plan; future review work and model repairs can change it. An unusually slow request hides the outdated estimate and retains its elapsed timer. Timing metadata is preserved with stage results, so reloads and resumed runs keep it; historical jobs acquire timing samples on subsequent requests.
+
 ## Human approval boundary
 
-The review page shows the overview, coverage, conflicts, missing information, category filters, search, 20 proposals per page, and an evidence drawer. Clear proposals are included by default. Users can edit/exclude proposals, save issue resolutions, and edit resume fields or advanced JSON. Saved decisions survive reload; proposal revisions reject stale writes.
+The review page shows readiness, coverage, conflicts, missing information, category filters, search, 20 proposals per page, and an evidence drawer. Clear proposals are included by default. Users can edit/exclude proposals, save issue resolutions, and edit resume fields or advanced JSON. Saved decisions survive reload; proposal revisions reject stale writes. Legacy candidates are also paginated in the interface.
 
 Approval requires complete coverage and agent review, resolution/acknowledgment of blocking issues, a supported player character name, a usable location and objective, valid state/evidence, and agreement between inventory/skill claims and the resume. Participants mean people physically present at the ending. The default empty state cannot be approved as a reconstructed ending. Unknown information can remain explicitly unknown after acknowledgment. Unresolved character references must be corrected or excluded.
 
@@ -41,21 +57,27 @@ Approval atomically saves the resume checkpoint, a branch-scoped transcript bind
 
 The Story page shows one clean resume message and a paginated, searchable transcript reader instead of hundreds of source chat messages. Live world occurrences and graph relationships open supporting source evidence. Source history, graph and memories follow the selected checkpoint and fork; future approvals are absent from earlier checkpoints. A paused turn is visible on the Story page with its error and Retry/Cancel controls.
 
-Approval cannot overwrite a branch that advanced after upload. Fork the original checkpoint and import there instead. The original source remains downloadable regardless of parse, provider, review, or approval outcome.
+Readiness and transactional approval share one evaluator for coverage, completed review, usable scene, player identity, evidence, state consistency, world references, unchanged checkpoint, and active/paused story runs. Structural warnings are reevaluated against edited data; uncertainty can be acknowledged with a note, while invalid data must be corrected. Approval cannot overwrite a branch that advanced after upload. Fork the original checkpoint and import there instead. The original source remains downloadable regardless of parse, provider, review, or approval outcome.
 
 ## APIs and compatibility
 
-- Upload: `POST /api/branches/{id}/imports` with multipart `file`, `inputCharacterLimit`, `outputTokenLimit`, `maxCalls`, and optional `provider`/`model` for this import. `prepareOnly=true` prepares without inference; `resume-processing` starts it. Omitted profile/model use reconstruction settings; overrides do not change those settings.
+- Upload: `POST /api/branches/{id}/imports` with multipart `file`, `inputCharacterLimit`, `outputTokenLimit`, `maxCalls`, and optional `provider`/`model` for this import. `prepareOnly=true` prepares without inference; `resume-processing` starts it. Optional `destination=new|current`, `timelineName`, and `checkpointId` select a destination; omission retains the previous current-timeline behavior. Fork/source/job creation is transactional. Omitted profile/model use reconstruction settings; overrides do not change those settings.
 - Document summary: `GET /api/sources/{id}/structure`; source reader: `GET .../blocks?jobId=...&page=0&q=...&ordinals=0,1` (20 blocks per page).
 - Approved transcript history: `GET /api/branches/{id}/transcripts?checkpointId=...&page=0`.
-- Draft: `GET /api/imports/{id}/draft`; proposals: `GET .../proposals?page=0&category=fact&q=key&history=false`.
-- Evidence: `GET .../evidence?page=0&ordinals=0,1`. API ordinals start at zero; UI passage numbers start at one.
+- Draft: `GET /api/imports/{id}/draft` includes `approval: { canApprove, blockers }` with proposal/issue/field references; proposals: `GET .../proposals?page=0&category=fact&q=key&history=false`.
+- Evidence: `GET .../evidence?page=0&proposalId=...` pages all saved citations, 20 blocks at a time. Explicit `ordinals=0,1` remains supported up to 64 ordinals. API ordinals start at zero; UI passage numbers start at one.
+- Legacy candidates: `GET .../candidates?page=0`, 20 per page. Job metadata accepts `includeCandidates=false`.
 - Saved edits: `PUT .../proposals/{proposalId}` with `{ revision, claim, excluded }`; `PUT .../issues/{issueId}` with `{ revision, resolution }`; `PUT .../resume` with `{ revision, resume }`.
 - Retry: `POST .../resume-processing` with optional provider/model and budgets. Subsequent stage results record the selected model.
+- Preparation retry: `POST .../prepare` for stopped normalization jobs, without inference.
 - Approval: `POST .../approval` with `{ expectedCheckpointId, revision }`.
-- Reanalysis: `POST .../reanalyze` with processing budgets creates a new draft from the same source.
+- Reanalysis: `POST .../reanalyze` with processing budgets, optional provider/model, `prepareOnly`, `forkOriginal`, and `timelineName` creates a new draft from the same source. Omitted `prepareOnly` retains previous API behavior.
 
-Legacy imports remain inspectable with their original evidence IDs and a grouped transcript display. The migration backfills approved history bindings, including inherited evidence on forks. Reanalysis creates a fresh draft without changing approved campaigns. Portable export version 4 includes normalized documents, offset citations and history bindings alongside sections, drafts, issues, results and decisions; versions 1–3 remain readable. Restored source/job/evidence IDs are remapped in graph snapshots. Restored active jobs pause and do not copy leases.
+Legacy imports remain inspectable with their original evidence IDs and a grouped transcript display. The migration backfills approved history bindings, including inherited evidence on forks. Reanalysis creates a fresh draft without changing approved campaigns. Portable export version 5 includes campaign settings, normalized documents, offset citations and history bindings alongside sections, drafts, issues, results and decisions; versions 1–4 remain readable. Required collections, duplicate IDs, references, and embedded JSON are validated before persistence; invalid exports create no partial campaign. Restored source/job/evidence IDs are remapped in graph snapshots. Restored preparing, queued, and processing jobs pause and do not copy leases.
+
+## Local regression checks
+
+Run `dotnet test tests/Story.Tests.csproj`, `npm --prefix frontend run build`, and `node tests/review-draft.mjs` (Node 22.18+ with native TypeScript support). For isolated PostgreSQL and recorded inference, start `docker compose -p occ-import-review -f docker-compose.yml -f tests/import-compose.yml up -d --build`; then run `node tests/import-reliability-smoke.mjs`, `node tests/entity-repair-smoke.mjs`, `node tests/skill-repair-smoke.mjs`, and `node tests/import-smoke.mjs http://localhost:8082`. This separate stack uses synthetic files, its own database, and a local scripted model; it does not call paid providers. Stop it with the same Compose files and `down` when finished. These checks validate transport, state, and review behavior; they do not measure live-model interpretation quality.
 
 Model context and transcript pages are bounded, but checkpoint world JSON still stores a complete snapshot. Very large occurrence/memory histories will increase checkpoint storage and load costs. Live turns may add entities up to a 5,000-entity total; existing larger imports can continue when a turn creates no additional entities. A normalized event store and database-backed graph paging remain future scaling work. Text coverage proves that every source block was read, not that every detail was correctly reconstructed; author review and capacity issues remain necessary.
 

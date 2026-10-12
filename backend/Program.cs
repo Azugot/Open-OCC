@@ -36,7 +36,7 @@ app.Use(async (context, next) =>
         }
     }
     try { await next(); }
-    catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException or DbUpdateConcurrencyException or BadHttpRequestException)
+    catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException or DbUpdateConcurrencyException or BadHttpRequestException or JsonException)
     {
         if (context.Response.HasStarted) throw;
         context.Response.StatusCode = e is KeyNotFoundException ? 404 : e is DbUpdateConcurrencyException ? 409 : 400;
@@ -58,13 +58,14 @@ if (!app.Environment.IsEnvironment("Testing"))
     // Streaming runs capture continuity context; autonomous runs retain resumable
     // draft steps instead. Only the former lack a safe execution cursor on restart.
     foreach (var run in await db.GenerationRuns.Where(x => x.Status == "running" && x.ContextJson != "{}").ToListAsync())
-    { run.Status = "interrupted"; run.Error = "Application restarted before the turn completed. No partial turn was committed."; }
+    { run.Status = "interrupted"; GenerationProgress.Stop(run); run.Error = "Application restarted before the turn completed. No partial turn was committed."; }
     await db.SaveChangesAsync();
     await StoryEngine.Recover(db);
 }
 app.MapGet("/health", async (StoryDb db) => await db.Database.CanConnectAsync() ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
 app.MapGet("/api/campaigns", async (StoryDb db, CancellationToken ct) => await db.Campaigns.OrderByDescending(x => x.CreatedAt).Select(c => new
-    { c.Id, c.Name, c.CreatedAt, branches = db.Branches.Where(b => b.CampaignId == c.Id).OrderBy(b => b.CreatedAt).Select(b => new { b.Id, b.Name }).ToList() }).ToListAsync(ct));
+    { c.Id, c.Name, c.CreatedAt, c.RollModeEnabled, c.GeneralInstructions, branches = db.Branches.Where(b => b.CampaignId == c.Id).OrderBy(b => b.CreatedAt).Select(b => new { b.Id, b.Name }).ToList() }).ToListAsync(ct));
+app.MapPut("/api/campaigns/{id:guid}/settings", async (Guid id, CampaignSettingsUpdate request, StoryDb db, CancellationToken ct) => Results.Ok(await CampaignService.UpdateSettings(db, id, request, ct)));
 app.MapGet("/api/worlds", async (StoryDb db, CancellationToken ct) => await db.Worlds.OrderBy(x => x.Name).Select(x => new { world = x, versions = db.WorldVersions.Where(v => v.WorldId == x.Id).OrderByDescending(v => v.Version).ToList() }).ToListAsync(ct));
 app.MapDelete("/api/campaigns/{id:guid}", async (Guid id, StoryDb db, CancellationToken ct) =>
 {
@@ -105,8 +106,8 @@ app.MapGet("/api/branches/{id:guid}", async (Guid id, StoryDb db, CancellationTo
         events = await db.Events.Where(x => x.BranchId == id).OrderByDescending(x => x.Sequence).Take(100).ToListAsync(ct),
         summary = await db.Summaries.SingleOrDefaultAsync(x => x.BranchId == id, ct) });
 });
-app.MapPost("/api/campaigns/{id:guid}/characters", async (Guid id, CreateCharacterRequest request, StoryDb db, CancellationToken ct) => { if (!await db.Campaigns.AnyAsync(x => x.Id == id, ct)) throw new KeyNotFoundException(); CampaignService.RequireText(request.Name, 100, "Character name"); CampaignService.RequireText(request.Description, 2000, "Character description"); var row = new Character { CampaignId = id, Name = request.Name.Trim(), Description = request.Description.Trim(), Goals = request.Goals.Trim(), Status = request.Status.Trim() }; db.Characters.Add(row); await db.SaveChangesAsync(ct); return Results.Ok(row); });
-app.MapPost("/api/branches/{id:guid}/relationships", async (Guid id, UpsertRelationshipRequest request, StoryDb db, CancellationToken ct) => { var branch = await db.Branches.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException(); if (!await db.Characters.AnyAsync(x => x.Id == request.FromCharacterId && x.CampaignId == branch.CampaignId, ct) || !await db.Characters.AnyAsync(x => x.Id == request.ToCharacterId && x.CampaignId == branch.CampaignId, ct)) throw new InvalidOperationException("Both characters must belong to the campaign."); var row = await db.Relationships.SingleOrDefaultAsync(x => x.BranchId == id && x.FromCharacterId == request.FromCharacterId && x.ToCharacterId == request.ToCharacterId, ct); var isNew = row is null; row ??= new Relationship { BranchId = id, FromCharacterId = request.FromCharacterId, ToCharacterId = request.ToCharacterId }; row.Label = request.Label.Trim(); row.Score = Math.Clamp(request.Score, -100, 100); row.Notes = request.Notes.Trim(); row.EffectiveSequence = (await db.Checkpoints.SingleAsync(x => x.Id == branch.HeadCheckpointId, ct)).Sequence; if (isNew) db.Relationships.Add(row); await db.SaveChangesAsync(ct); return Results.Ok(row); });
+app.MapPost("/api/campaigns/{id:guid}/characters", async (Guid id, CreateCharacterRequest request, StoryDb db, CancellationToken ct) => Results.Ok(await CharacterService.CreateLegacy(db, id, request, ct)));
+app.MapPost("/api/branches/{id:guid}/relationships", async (Guid id, UpsertRelationshipRequest request, StoryDb db, CancellationToken ct) => Results.Ok(await CharacterService.SaveLegacyRelationship(db, id, request, ct)));
 app.MapPost("/api/branches/{id:guid}/knowledge", async (Guid id, UpsertKnowledgeRequest request, StoryDb db, CancellationToken ct) => { var branch = await db.Branches.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException(); if (!await db.Characters.AnyAsync(x => x.Id == request.CharacterId && x.CampaignId == branch.CampaignId, ct)) throw new InvalidOperationException("Character must belong to the campaign."); CampaignService.RequireText(request.Subject, 1000, "Knowledge subject"); if (request.Confidence is < 0 or > 1) throw new InvalidOperationException("Confidence must be between 0 and 1."); var subject = request.Subject.Trim(); var row = await db.Knowledge.SingleOrDefaultAsync(x => x.BranchId == id && x.CharacterId == request.CharacterId && x.Subject == subject, ct); var isNew = row is null; row ??= new KnowledgeRecord { BranchId = id, CharacterId = request.CharacterId, Subject = subject }; row.FactId = request.FactId; row.BeliefType = request.BeliefType.Trim(); row.Confidence = request.Confidence; row.EffectiveSequence = (await db.Checkpoints.SingleAsync(x => x.Id == branch.HeadCheckpointId, ct)).Sequence; if (isNew) db.Knowledge.Add(row); await db.SaveChangesAsync(ct); return Results.Ok(row); });
 app.MapPost("/api/branches/{id:guid}/mechanics", async (Guid id, ApplyMechanicsRequest request, StoryDb db, CancellationToken ct) => Results.Ok(await MechanicsService.Apply(db, id, request, ct)));
 app.MapGet("/api/branches/{id:guid}/events", async (Guid id, StoryDb db, CancellationToken ct) => await db.Events.Where(x => x.BranchId == id).OrderBy(x => x.Sequence).ToListAsync(ct));
@@ -148,6 +149,7 @@ app.MapPost("/api/branches/{id:guid}/turns", async (Guid id, TurnRequest request
     var run = new GenerationRun { BranchId = id, Action = request.Action.Trim(), ExpectedCheckpointId = checkpoint.Id,
         Provider = world.Settings.DirectorProfile, Model = string.IsNullOrWhiteSpace(world.Settings.DirectorModel) ? profile?.Model ?? "fixture-v1" : world.Settings.DirectorModel.Trim() };
     branch.Revision++;
+    GenerationProgress.Set(run, "autonomous", "preparing");
     db.GenerationRuns.Add(run); await db.SaveChangesAsync(ct);
     await StoryEngine.Execute(db, run, config, ct);
     return Results.Ok(new { run.Id });
@@ -170,6 +172,7 @@ app.MapPost("/api/branches/{id:guid}/turns/stream", async (Guid id, TurnRequest 
     var checkpoint = await db.Checkpoints.SingleAsync(x => x.Id == branch.HeadCheckpointId, ct);
     var storyContext = await continuity.Assemble(db, id, Json.Read<StoryState>(checkpoint.StateJson), request.Action.Trim(), ct);
     var run = new GenerationRun { BranchId = id, Action = request.Action.Trim(), ExpectedCheckpointId = checkpoint.Id, Provider = profile.Id, Model = profile.Model, ContextJson = Json.Write(storyContext) };
+    GenerationProgress.Set(run, "narrator", "preparing");
     branch.Revision++;
     db.GenerationRuns.Add(run);
     await db.SaveChangesAsync(ct);
@@ -178,6 +181,14 @@ app.MapPost("/api/branches/{id:guid}/turns/stream", async (Guid id, TurnRequest 
         http.Response.ContentType = "application/x-ndjson";
         await http.Response.WriteAsync(Json.Write(new { type = "start", runId = run.Id }) + "\n", ct);
         await http.Response.Body.FlushAsync(ct);
+        async Task Report(string phase)
+        {
+            GenerationProgress.Set(run, "narrator", phase);
+            await db.SaveChangesAsync(ct);
+            await http.Response.WriteAsync(Json.Write(new { type = "progress", progress = GenerationProgress.View(run) }) + "\n", ct);
+            await http.Response.Body.FlushAsync(ct);
+        }
+        await Report("narrating");
         var narrative = new StringBuilder();
         await foreach (var evt in provider.Stream(ContinuityService.NarrationPrompt(storyContext, run.Action), ct))
         {
@@ -191,6 +202,7 @@ app.MapPost("/api/branches/{id:guid}/turns/stream", async (Guid id, TurnRequest 
             if (evt.Type == "done") { run.InputTokens = evt.InputTokens; run.OutputTokens = evt.OutputTokens; }
         }
         var validatedNarrative = ContinuityService.ValidateNarrative(narrative.ToString());
+        await Report("checking-continuity");
         var memory = await routing.Resolve(db, "memory", ct);
         StateTransition transition;
         var continuityUpdated = true;
@@ -211,6 +223,7 @@ app.MapPost("/api/branches/{id:guid}/turns/stream", async (Guid id, TurnRequest 
         await db.Entry(branch).ReloadAsync(ct);
         await db.Entry(run).ReloadAsync(ct);
         if (run.Status != "running") throw new OperationCanceledException("Turn was cancelled.");
+        await Report("saving");
         await CampaignService.CommitTurn(db, run, validatedNarrative, nextState, transition, ct);
         await http.Response.WriteAsync(Json.Write(new { type = "done", runId = run.Id, checkpointId = branch.HeadCheckpointId, continuityUpdated }) + "\n", ct);
         await http.Response.Body.FlushAsync(ct);
@@ -224,6 +237,7 @@ app.MapPost("/api/branches/{id:guid}/turns/stream", async (Guid id, TurnRequest 
         {
             if (saved.Status != "cancelled") saved.Status = e is OperationCanceledException ? "cancelled" : "failed";
             saved.Error = "Turn did not commit. Reload the branch and retry.";
+            GenerationProgress.Stop(saved);
             await db.SaveChangesAsync(CancellationToken.None);
         }
         else return; // A disconnected client must not reclassify a committed turn.
@@ -283,44 +297,36 @@ app.MapPost("/api/branches/{id:guid}/imports", async (Guid id, HttpRequest reque
         throw new InvalidOperationException("Supported uploads: .txt, .md, .html, .docx, or .json, up to 32 MiB, with a filename of at most 200 characters.");
     using var stream = new MemoryStream(); await file.CopyToAsync(stream, ct);
     var bytes = stream.ToArray();
-    var source = new ImportedSource { CampaignId = branch.CampaignId, FileName = name, Bytes = bytes, Sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() };
-    var importProvider = form["provider"].ToString();
-    var importModel = form["model"].ToString();
-    if (importModel.Length > 200 || importModel.Any(char.IsControl)) throw new InvalidOperationException("Model IDs must contain at most 200 characters and no control characters.");
-    if (!string.IsNullOrWhiteSpace(importProvider) && string.IsNullOrWhiteSpace(importModel))
-        importModel = await db.Providers.Where(x => x.Id == importProvider).Select(x => x.Model).SingleOrDefaultAsync(ct) ?? "";
-    var reconstruction = string.IsNullOrWhiteSpace(importProvider) ? await routing.Resolve(db, "reconstruction", ct) :
-        await routing.ResolveCaptured(db, importProvider, importModel, ct);
     var options = new ImportOptions(
         int.TryParse(form["inputCharacterLimit"], out var inputLimit) ? inputLimit : 24000,
         int.TryParse(form["outputTokenLimit"], out var outputLimit) ? outputLimit : 3000,
         int.TryParse(form["maxCalls"], out var maxCalls) ? maxCalls : 100);
-    Reconstruction.ValidateOptions(options);
     var prepareOnly = bool.TryParse(form["prepareOnly"], out var previewRequested) && previewRequested;
-    var job = new ImportJob { BranchId = id, SourceId = source.Id, ExpectedCheckpointId = branch.HeadCheckpointId,
-        Method = Reconstruction.Method, Provider = reconstruction.Profile.Id, Model = reconstruction.Profile.Model,
-        Status = prepareOnly ? "preparing" : "queued",
-        InputCharacterLimit = options.InputCharacterLimit, OutputTokenLimit = options.OutputTokenLimit, MaxCalls = options.MaxCalls };
-    db.AddRange(source, job); await db.SaveChangesAsync(ct);
-    if (prepareOnly)
-    {
-        // Source-first preview is deterministic and makes no provider request.
-        try { await Reconstruction.Step(db, job, null, ct); }
-        catch (Exception error) when (error is InvalidOperationException or System.Xml.XmlException or InvalidDataException or DecoderFallbackException)
-        {
-            // Failed preparation still preserves the exact source for inspection.
-            job.Status = "paused"; job.Error = "Source preparation failed: " + error.Message;
-            await db.SaveChangesAsync(ct);
-        }
-    }
+    Guid? checkpointId = null;
+    if (!string.IsNullOrWhiteSpace(form["checkpointId"]))
+        checkpointId = Guid.TryParse(form["checkpointId"], out var parsed) ? parsed : throw new InvalidOperationException("Invalid destination checkpoint.");
+    var job = await ImportPreparation.Upload(db, routing, id, name, bytes, options, prepareOnly,
+        form["provider"], form["model"], string.IsNullOrWhiteSpace(form["destination"]) ? "current" : form["destination"].ToString(),
+        string.IsNullOrWhiteSpace(form["timelineName"]) ? "Imported story" : form["timelineName"].ToString(), checkpointId, ct);
     return Results.Accepted($"/api/imports/{job.Id}", job);
 });
-app.MapGet("/api/branches/{id:guid}/imports", async (Guid id, StoryDb db) => await db.ImportJobs.Where(x => x.BranchId == id).OrderByDescending(x => x.CreatedAt).ToListAsync());
-app.MapGet("/api/imports/{id:guid}", async (Guid id, StoryDb db) =>
+app.MapGet("/api/branches/{id:guid}/imports", async (Guid id, StoryDb db) => await db.ImportJobs.Where(x => x.BranchId == id).OrderByDescending(x => x.CreatedAt)
+    .Select(x => new { x.Id, x.SourceId, x.BranchId, x.Status, x.Stage, x.Processed, x.Total, x.Error, x.Method, x.CreatedAt,
+        fileName = db.Sources.Where(s => s.Id == x.SourceId).Select(s => s.FileName).First(),
+        timelineName = db.Branches.Where(b => b.Id == x.BranchId).Select(b => b.Name).First() }).ToListAsync());
+app.MapGet("/api/imports/{id:guid}/candidates", async (Guid id, int? page, StoryDb db, CancellationToken ct) =>
+{
+    if (!await db.ImportJobs.AnyAsync(x => x.Id == id, ct)) throw new KeyNotFoundException();
+    var rows = db.Facts.Where(x => x.JobId == id); var index = Math.Max(0, page ?? 0);
+    return Results.Ok(new { total = await rows.CountAsync(ct), page = index, items = await rows.OrderBy(x => x.Id).Skip(index * 20).Take(20)
+        .Select(f => new { fact = f, evidence = db.Evidence.Where(e => e.FactId == f.Id).Join(db.Segments, e => e.SegmentId, s => s.Id,
+            (e, s) => new { s.Id, s.Ordinal, s.Speaker, s.Text }).ToList() }).ToListAsync(ct) });
+});
+app.MapGet("/api/imports/{id:guid}", async (Guid id, bool? includeCandidates, StoryDb db) =>
 {
     var job = await db.ImportJobs.SingleOrDefaultAsync(x => x.Id == id) ?? throw new KeyNotFoundException();
     var source = await db.Sources.Where(x => x.Id == job.SourceId).Select(x => new { x.Id, x.FileName, x.Sha256, size = x.Bytes.Length }).SingleAsync();
-    return Results.Ok(new { job, source, candidates = await db.Facts.Where(x => x.JobId == id).Select(f => new { fact = f, evidence = db.Evidence.Where(e => e.FactId == f.Id).Join(db.Segments, e => e.SegmentId, s => s.Id, (e, s) => new { s.Id, s.Ordinal, s.Speaker, s.Text }).ToList() }).ToListAsync() });
+    return Results.Ok(new { job, source, candidates = includeCandidates == false ? [] : await db.Facts.Where(x => x.JobId == id).Select(f => new { fact = f, evidence = db.Evidence.Where(e => e.FactId == f.Id).Join(db.Segments, e => e.SegmentId, s => s.Id, (e, s) => new { s.Id, s.Ordinal, s.Speaker, s.Text }).ToList() }).ToListAsync() });
 });
 app.MapGet("/api/sources/{id:guid}/download", async (Guid id, StoryDb db) =>
 {
@@ -344,6 +350,8 @@ app.MapPost("/api/imports/{id:guid}/approve", async (Guid id, ApproveImport requ
 ImportReview.Map(app);
 TranscriptApi.Map(app);
 EngineApi.Map(app);
+CharacterService.Map(app);
+GenerationProgress.Map(app);
 app.Run();
 
 public record ProfileUpdate(string Model, bool Enabled, string? Adapter = null);

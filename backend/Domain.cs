@@ -32,6 +32,8 @@ public class Campaign
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Name { get; set; } = "";
     public Guid? WorldVersionId { get; set; }
+    public bool RollModeEnabled { get; set; } = true;
+    public string GeneralInstructions { get; set; } = "";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 public class World
@@ -99,6 +101,7 @@ public class GenerationRun
     public int? OutputTokens { get; set; }
     public string? Error { get; set; }
     public string DraftJson { get; set; } = "{}";
+    public string ProgressJson { get; set; } = "{}";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 public class ImportedSource

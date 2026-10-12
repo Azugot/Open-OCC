@@ -57,7 +57,15 @@ public static class MechanicsService
         else skills[request.Subject] = AdvanceSkill(skills.GetValueOrDefault(request.Subject, "F · 0/5"), request.Delta);
         var nextState = state with { Inventory = inventory, Skills = skills };
         nextState.Validate();
-        var checkpoint = new Checkpoint { BranchId = branchId, Sequence = current.Sequence + 1, Label = "Deterministic mechanics", StateJson = Json.Write(nextState), WorldJson = current.WorldJson };
+        if (await db.GenerationRuns.AnyAsync(r => r.BranchId == branchId && (r.Status == "running" || r.Status == "paused"), ct)) throw new InvalidOperationException("Finish or cancel the active draft before editing mechanics.");
+        var world = StoryWorld.From(current); CharacterService.Normalize(world, state);
+        if (request.Kind == "skill") {
+            var old = world.Capabilities.SingleOrDefault(c => c.OwnerId == "player" && c.Category == "proficiency" && c.Name == request.Subject);
+            var updated = old is null ? new CharacterCapability(Guid.NewGuid().ToString("N"), "player", "proficiency", request.Subject, Rank: skills[request.Subject]) : old with { Rank = skills[request.Subject], Active = true };
+            if (old is null) world.Capabilities.Add(updated); else world.Capabilities[world.Capabilities.IndexOf(old)] = updated;
+        }
+        CharacterService.Validate(world); CharacterService.SyncPlayerSkills(world, nextState);
+        var checkpoint = new Checkpoint { BranchId = branchId, Sequence = current.Sequence + 1, Label = "Deterministic mechanics", StateJson = Json.Write(nextState), WorldJson = Json.Write(world) };
         db.Checkpoints.Add(checkpoint);
         db.Messages.Add(new Message { BranchId = branchId, Sequence = checkpoint.Sequence, Role = "system", Content = $"{request.Kind} changed: {request.Subject} {FormatDelta(request.Delta)} ({request.Reason.Trim()})", Provider = "deterministic", Model = "mechanics-v1" });
         db.Mechanics.Add(new MechanicsLedgerEntry { BranchId = branchId, Sequence = checkpoint.Sequence, Kind = request.Kind, Subject = request.Subject.Trim(), Delta = request.Delta, Reason = request.Reason.Trim() });

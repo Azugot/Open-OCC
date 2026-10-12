@@ -449,3 +449,25 @@
     flex-wrap: wrap;
   }
 }
+/* Character roster and snapshot editors */
+.characters-area { padding: 12px 0; }
+.character-filters { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; margin: 20px 0; }
+.character-filters label { flex: 1; min-width: 160px; }
+.character-layout { display: grid; grid-template-columns: minmax(220px, 28%) minmax(0, 1fr); gap: 24px; align-items: start; }
+.character-roster { max-height: 75vh; overflow: auto; padding: 4px; }
+.character-card { display: flex; flex-direction: column; gap: 8px; width: 100%; text-align: left; padding: 16px; margin-bottom: 12px; border: 1px solid #dce2d5; border-radius: 10px; background: #fafbf7; }
+.character-card.selected { border: 2px solid #526848; background: #edf2e7; }
+.character-card small, .character-card span { font-size: .85rem; color: #65705f; overflow-wrap: anywhere; }
+.character-detail { min-width: 0; padding: 20px; background: #fafbf7; border: 1px solid #dce2d5; border-radius: 12px; }
+.character-fields > div { margin: 18px 0; }
+.character-fields dt { font-weight: 600; margin-bottom: 6px; }
+.character-fields dd { margin: 0; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.character-entry { padding: 16px 0; border-bottom: 1px solid #dce2d5; scroll-margin-top: 20px; }
+.character-entry p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.character-editor { padding: 20px; border: 1px solid #8b9c7b; border-radius: 10px; margin: 16px 0; }
+.character-editor label { display: block; margin: 12px 0; }
+.character-editor input:not([type=checkbox]), .character-editor textarea, .character-editor select { width: 100%; box-sizing: border-box; }
+.character-editor textarea { min-height: 70px; resize: vertical; }
+.character-editor pre, .characters-area pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.characters-area button:focus-visible { outline: 3px solid #4e8990; outline-offset: 3px; }
+@media (max-width: 700px) { .character-layout { grid-template-columns: 1fr; } .character-roster { max-height: 260px; } .character-detail, .character-editor { padding: 14px; } }

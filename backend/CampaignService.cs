@@ -3,6 +3,16 @@ using Microsoft.EntityFrameworkCore;
 namespace Story;
 
 public record CreateCampaign(string Name, bool Synthetic = true, Guid? WorldVersionId = null);
+public record CampaignSettingsUpdate(bool RollModeEnabled, string GeneralInstructions);
+public record CampaignGuidance(bool RollModeEnabled = true, string GeneralInstructions = "")
+{
+    public static CampaignGuidance From(Campaign campaign) => new(campaign.RollModeEnabled, campaign.GeneralInstructions);
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string Prompt => "\n\nCAMPAIGN GENERAL INSTRUCTIONS (take priority over world author instructions and creative defaults; accommodate player intent coherently):\n"
+        + GeneralInstructions + "\nMandatory privacy, player agency, required output schemas and validated state rules remain in force. "
+        + (RollModeEnabled ? "The explicit roll toggle is ON. In autonomous mode, use server checks for uncertain attempts."
+            : "The explicit roll toggle is OFF. Resolve attempts narratively without dice, rolls or invented check results.");
+}
 public record TurnRequest(Guid ExpectedCheckpointId, string Action);
 public record ForkRequest(Guid CheckpointId, string Name);
 public record ReviewDecision(Guid FactId, bool Accept, string Text, string Visibility, string Kind = "fact", double Confidence = 1, string[]? KnownBy = null);
@@ -11,13 +21,23 @@ public record ApproveImport(Guid ExpectedCheckpointId, StoryState State, ReviewD
 public record CorrectFactRequest(Guid ExpectedCheckpointId, string Text, string Reason, string Visibility = "public", string Kind = "fact", double Confidence = 1, string[]? KnownBy = null);
 public record CreateWorldRequest(string Name, string Description = "");
 public record CreateWorldVersionRequest(string RulesJson = "{}", string LocationsJson = "[]", string FactionsJson = "[]", string AuthorInstructions = "");
-public record CreateCharacterRequest(string Name, string Description = "", string Goals = "", string Status = "active");
+public record CreateCharacterRequest(string Name, string Description = "", string Goals = "", string Status = "active", Guid? BranchId = null, Guid? ExpectedCheckpointId = null);
 public record UpsertRelationshipRequest(Guid FromCharacterId, Guid ToCharacterId, string Label, int Score = 0, string Notes = "");
 public record UpsertKnowledgeRequest(Guid CharacterId, Guid? FactId, string Subject, string BeliefType = "fact", double Confidence = 1);
 public record ApplyMechanicsRequest(Guid ExpectedCheckpointId, string Kind, string Subject, int Delta, string Reason);
 
 public static class CampaignService
 {
+    public static async Task<Campaign> UpdateSettings(StoryDb db, Guid id, CampaignSettingsUpdate request, CancellationToken ct)
+    {
+        if (request.GeneralInstructions is null || request.GeneralInstructions.Length > 8000)
+            throw new InvalidOperationException("General instructions must be at most 8000 characters.");
+        var campaign = await db.Campaigns.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw new KeyNotFoundException();
+        campaign.RollModeEnabled = request.RollModeEnabled;
+        campaign.GeneralInstructions = request.GeneralInstructions.Trim();
+        await db.SaveChangesAsync(ct);
+        return campaign;
+    }
     public static async Task<Branch> Create(StoryDb db, CreateCampaign request, CancellationToken ct, EngineSettings? settings = null)
     {
         RequireText(request.Name, 100, "Campaign name");
@@ -90,6 +110,9 @@ public static class CampaignService
         var branch = await db.Branches.SingleAsync(x => x.Id == run.BranchId, ct);
         if (branch.HeadCheckpointId != run.ExpectedCheckpointId) throw new DbUpdateConcurrencyException("Branch changed. Reload before continuing.");
         var current = await db.Checkpoints.SingleAsync(x => x.Id == branch.HeadCheckpointId, ct);
+        // Story generation cannot grant capabilities or change author-managed skill ranks.
+        var priorState = Json.Read<StoryState>(current.StateJson);
+        state = state with { Skills = new Dictionary<string, string>(priorState.Skills) };
         state.Validate();
         var autonomous = nextWorld is not null;
         if (nextWorld is null)
@@ -99,6 +122,8 @@ public static class CampaignService
             var observed = nextWorld.Characters.Where(c => nextWorld.Entities.Single(e => e.Id == c.EntityId).LocationId == nextWorld.PlayerLocationId).Select(c => c.EntityId).Append("player").ToArray();
             nextWorld.Events.Add(new("narration-" + run.Id.ToString("N"), nextWorld.Events.Count, 0, "director", nextWorld.PlayerLocationId, narrative[..Math.Min(narrative.Length, 4000)], observed, [nextWorld.PlayerLocationId], state.Time, "narration"));
         }
+        CharacterService.Normalize(nextWorld, priorState, await db.Characters.Where(c => c.CampaignId == branch.CampaignId).ToArrayAsync(ct), sequence: current.Sequence + 2);
+        CharacterService.SyncPlayerSkills(nextWorld, state);
         var checkpoint = new Checkpoint { BranchId = branch.Id, Sequence = current.Sequence + 2, Label = autonomous ? "Story turn" : run.Provider == "fixture" ? "Simulated turn" : "Narrated turn", StateJson = Json.Write(state), WorldJson = Json.Write(nextWorld) };
         var assistantMessage = new Message { BranchId = branch.Id, Sequence = current.Sequence + 2, Content = narrative, Provider = run.Provider, Model = run.Model };
         db.Messages.AddRange(
@@ -122,6 +147,7 @@ public static class CampaignService
         else { summary.ThroughSequence = checkpoint.Sequence; summary.Text = summaryText; summary.UpdatedAt = DateTime.UtcNow; }
         run.StateProposalJson = Json.Write(transition);
         run.Status = "completed";
+        GenerationProgress.Stop(run);
         await db.SaveChangesAsync(ct);
     }
 
